@@ -321,6 +321,9 @@ endif
 
 all:	$(notdir $(KBUILD_IMAGE)) $(KBUILD_DTBS)
 
+MTK_PLATFORM := $(CONFIG_MTK_PLATFORM:"%"=%)
+MTK_PROJECT := $(CONFIG_ARCH_MTK_PROJECT:"%"=%)
+export MTK_PLATFORM MTK_PROJECT
 
 archheaders:
 	$(Q)$(MAKE) $(build)=arch/arm/tools uapi
@@ -349,9 +352,12 @@ $(INSTALL_TARGETS):
 %.dtb: | scripts
 	$(Q)$(MAKE) $(build)=$(boot)/dts MACHINE=$(MACHINE) $(boot)/dts/$@
 
+%.dtbo: | scripts $(DRVGEN_FILE_LIST)
+	$(Q)$(MAKE) $(build)=$(boot)/dts MACHINE=$(MACHINE) $(boot)/dts/$@
+
 PHONY += dtbs dtbs_install
 
-dtbs: prepare scripts
+dtbs: prepare scripts drvgen
 	$(Q)$(MAKE) $(build)=$(boot)/dts
 
 dtbs_install:
