@@ -38,6 +38,7 @@
 #include <linux/sched/signal.h>
 #include <linux/mm_inline.h>
 #include <trace/events/writeback.h>
+#include <mt-plat/mtk_blocktag.h>
 
 #include "internal.h"
 
@@ -561,8 +562,8 @@ int dirty_ratio_handler(struct ctl_table *table, int write,
 
 	ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 	if (ret == 0 && write && vm_dirty_ratio != old_ratio) {
-		writeback_set_ratelimit();
 		vm_dirty_bytes = 0;
+		writeback_set_ratelimit();
 	}
 	return ret;
 }

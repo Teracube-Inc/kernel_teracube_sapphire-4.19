@@ -439,7 +439,11 @@ struct uvc_video_chain {
 	struct uvc_entity *processing;		/* Processing unit */
 	struct uvc_entity *selector;		/* Selector unit */
 
-	struct mutex ctrl_mutex;		/* Protects ctrl.info */
+	struct mutex ctrl_mutex;		/*
+						 * Protects ctrl.info,
+						 * ctrl.handle and
+						 * uvc_fh.pending_async_ctrls
+						 */
 
 	struct v4l2_prio_state prio;		/* V4L2 priority state */
 	u32 caps;				/* V4L2 chain-wide caps */
@@ -632,6 +636,7 @@ struct uvc_fh {
 	struct uvc_video_chain *chain;
 	struct uvc_streaming *stream;
 	enum uvc_handle_state state;
+	unsigned int pending_async_ctrls;
 };
 
 struct uvc_driver {
@@ -700,6 +705,7 @@ int uvc_query_buffer(struct uvc_video_queue *queue,
 int uvc_create_buffers(struct uvc_video_queue *queue,
 		       struct v4l2_create_buffers *v4l2_cb);
 int uvc_queue_buffer(struct uvc_video_queue *queue,
+		     struct media_device *mdev,
 		     struct v4l2_buffer *v4l2_buf);
 int uvc_export_buffer(struct uvc_video_queue *queue,
 		      struct v4l2_exportbuffer *exp);
@@ -799,6 +805,8 @@ int uvc_ctrl_set(struct uvc_fh *handle, struct v4l2_ext_control *xctrl);
 
 int uvc_xu_ctrl_query(struct uvc_video_chain *chain,
 		      struct uvc_xu_control_query *xqry);
+
+void uvc_ctrl_cleanup_fh(struct uvc_fh *handle);
 
 /* Utility functions */
 void uvc_simplify_fraction(u32 *numerator, u32 *denominator,

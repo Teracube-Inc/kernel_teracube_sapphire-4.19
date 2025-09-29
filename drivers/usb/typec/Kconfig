@@ -72,6 +72,16 @@ config TYPEC_RT1711H
 	  Type-C Port Controller Manager to provide USB PD and USB
 	  Type-C functionalities.
 
+config TYPEC_MT6360
+	tristate "Mediatek MT6360 Type-C chip driver"
+	depends on I2C
+	select TYPEC_TCPCI
+	help
+	  Mediatek MT6360 Type-C chip driver that works with
+	  Type-C Port Controller Manager to provide USB PD and USB
+	  Type-C functionalities.
+	  In Addition, include Type-C Interface FOD.
+
 source "drivers/usb/typec/fusb302/Kconfig"
 
 config TYPEC_WCOVE
@@ -91,6 +101,17 @@ config TYPEC_WCOVE
 endif # TYPEC_TCPM
 
 source "drivers/usb/typec/ucsi/Kconfig"
+
+config TYPEC_HD3SS3220
+	tristate "TI HD3SS3220 Type-C DRP Port controller driver"
+	depends on I2C
+	depends on USB_ROLE_SWITCH
+	help
+	  Say Y or M here if your system has TI HD3SS3220 Type-C DRP Port
+	  controller driver.
+
+	  If you choose to build this driver as a dynamically linked module, the
+	  module will be called hd3ss3220.ko.
 
 config TYPEC_TPS6598X
 	tristate "TI TPS6598x USB Power Delivery controller driver"

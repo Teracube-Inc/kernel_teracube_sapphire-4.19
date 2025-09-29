@@ -35,6 +35,7 @@ struct mmc_csd {
 	unsigned int		r2w_factor;
 	unsigned int		max_dtr;
 	unsigned int		erase_size;		/* In sectors */
+	unsigned int		wp_grp_size;
 	unsigned int		read_blkbits;
 	unsigned int		write_blkbits;
 	unsigned int		capacity;
@@ -97,6 +98,7 @@ struct mmc_ext_csd {
 	u8			raw_exception_status;	/* 54 */
 	u8			raw_partition_support;	/* 160 */
 	u8			raw_rpmb_size_mult;	/* 168 */
+	u8			boot_wp_status;	        /* 174 */
 	u8			raw_erased_mem_count;	/* 181 */
 	u8			strobe_support;		/* 184 */
 	u8			raw_ext_csd_structure;	/* 194 */
@@ -197,7 +199,9 @@ struct sdio_cccr {
 				wide_bus:1,
 				high_power:1,
 				high_speed:1,
-				disable_cd:1;
+				disable_cd:1,
+				sai:1,
+				eai:1;
 };
 
 struct sdio_cis {
@@ -278,6 +282,7 @@ struct mmc_card {
  	unsigned int		pref_erase;	/* in sectors */
 	unsigned int		eg_boundary;	/* don't cross erase-group boundaries */
  	u8			erased_byte;	/* value of erased bytes */
+	unsigned int		wp_grp_size; /* write group size in sectors */
 
 	u32			raw_cid[4];	/* raw card CID */
 	u32			raw_csd[4];	/* raw card CSD */
@@ -306,6 +311,10 @@ struct mmc_card {
 	struct dentry		*debugfs_root;
 	struct mmc_part	part[MMC_NUM_PHY_PARTITION]; /* physical partitions */
 	unsigned int    nr_parts;
+#ifdef CONFIG_MTK_EMMC_HW_CQ
+	unsigned int	part_curr;
+	bool cqe_init;
+#endif
 
 	unsigned int		bouncesz;	/* Bounce buffer size */
 	struct workqueue_struct *complete_wq;	/* Private workqueue */

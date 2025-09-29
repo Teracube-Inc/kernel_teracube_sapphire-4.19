@@ -138,7 +138,6 @@ struct rtc_device {
 
 	bool registered;
 
-	struct nvmem_device *nvmem;
 	/* Old ABI support */
 	bool nvram_old_abi;
 	struct bin_attribute *nvram;
@@ -189,6 +188,8 @@ extern int rtc_read_alarm(struct rtc_device *rtc,
 			struct rtc_wkalrm *alrm);
 extern int rtc_set_alarm(struct rtc_device *rtc,
 				struct rtc_wkalrm *alrm);
+extern int rtc_set_alarm_poweron(struct rtc_device *rtc,
+				struct rtc_wkalrm *alarm);
 extern int rtc_initialize_alarm(struct rtc_device *rtc,
 				struct rtc_wkalrm *alrm);
 extern void rtc_update_irq(struct rtc_device *rtc,

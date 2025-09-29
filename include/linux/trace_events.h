@@ -80,6 +80,8 @@ struct trace_iterator {
 	struct mutex		mutex;
 	struct ring_buffer_iter	**buffer_iter;
 	unsigned long		iter_flags;
+	void			*temp;	/* temp holder */
+	unsigned int		temp_size;
 
 	/* trace_seq for __print_flags() and __print_symbolic() etc. */
 	struct trace_seq	tmp_seq;
@@ -254,7 +256,7 @@ struct trace_event_call {
 	struct list_head	list;
 	struct trace_event_class *class;
 	union {
-		char			*name;
+		const char		*name;
 		/* Set TRACE_EVENT_FL_TRACEPOINT flag when using "tp" */
 		struct tracepoint	*tp;
 	};
@@ -547,7 +549,7 @@ do {									\
 	__trace_printk_check_format(fmt, ##args);			\
 	tracing_record_cmdline(current);				\
 	if (__builtin_constant_p(fmt)) {				\
-		static const char *trace_printk_fmt			\
+		static const char *trace_printk_fmt __used		\
 		  __attribute__((section("__trace_printk_fmt"))) =	\
 			__builtin_constant_p(fmt) ? fmt : NULL;		\
 									\

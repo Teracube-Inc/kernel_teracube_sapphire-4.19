@@ -85,8 +85,9 @@
 /* Forward declarations for internal helper functions. */
 static bool sctp_writeable(struct sock *sk);
 static void sctp_wfree(struct sk_buff *skb);
-static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
-				size_t msg_len);
+static int sctp_wait_for_sndbuf(struct sctp_association *asoc,
+				struct sctp_transport *transport,
+				long *timeo_p, size_t msg_len);
 static int sctp_wait_for_packet(struct sock *sk, int *err, long *timeo_p);
 static int sctp_wait_for_connect(struct sctp_association *, long *timeo_p);
 static int sctp_wait_for_accept(struct sock *sk, long timeo);
@@ -571,7 +572,6 @@ static int sctp_send_asconf_add_ip(struct sock		*sk,
 				   struct sockaddr	*addrs,
 				   int 			addrcnt)
 {
-	struct net *net = sock_net(sk);
 	struct sctp_sock		*sp;
 	struct sctp_endpoint		*ep;
 	struct sctp_association		*asoc;
@@ -586,11 +586,11 @@ static int sctp_send_asconf_add_ip(struct sock		*sk,
 	int 				i;
 	int 				retval = 0;
 
-	if (!net->sctp.addip_enable)
-		return retval;
-
 	sp = sctp_sk(sk);
 	ep = sp->ep;
+
+	if (!ep->asconf_enable)
+		return retval;
 
 	pr_debug("%s: sk:%p, addrs:%p, addrcnt:%d\n",
 		 __func__, sk, addrs, addrcnt);
@@ -774,7 +774,6 @@ static int sctp_send_asconf_del_ip(struct sock		*sk,
 				   struct sockaddr	*addrs,
 				   int			addrcnt)
 {
-	struct net *net = sock_net(sk);
 	struct sctp_sock	*sp;
 	struct sctp_endpoint	*ep;
 	struct sctp_association	*asoc;
@@ -790,11 +789,12 @@ static int sctp_send_asconf_del_ip(struct sock		*sk,
 	int			stored = 0;
 
 	chunk = NULL;
-	if (!net->sctp.addip_enable)
-		return retval;
 
 	sp = sctp_sk(sk);
 	ep = sp->ep;
+
+	if (!ep->asconf_enable)
+		return retval;
 
 	pr_debug("%s: sk:%p, addrs:%p, addrcnt:%d\n",
 		 __func__, sk, addrs, addrcnt);
@@ -1950,7 +1950,7 @@ static int sctp_sendmsg_to_asoc(struct sctp_association *asoc,
 
 	if (sctp_wspace(asoc) <= 0 || !sk_wmem_schedule(sk, msg_len)) {
 		timeo = sock_sndtimeo(sk, msg->msg_flags & MSG_DONTWAIT);
-		err = sctp_wait_for_sndbuf(asoc, &timeo, msg_len);
+		err = sctp_wait_for_sndbuf(asoc, transport, &timeo, msg_len);
 		if (err)
 			goto err;
 		if (unlikely(sinfo->sinfo_stream >= asoc->stream.outcnt)) {
@@ -3396,7 +3396,6 @@ static int sctp_setsockopt_maxseg(struct sock *sk, char __user *optval, unsigned
 static int sctp_setsockopt_peer_primary_addr(struct sock *sk, char __user *optval,
 					     unsigned int optlen)
 {
-	struct net *net = sock_net(sk);
 	struct sctp_sock	*sp;
 	struct sctp_association	*asoc = NULL;
 	struct sctp_setpeerprim	prim;
@@ -3406,7 +3405,7 @@ static int sctp_setsockopt_peer_primary_addr(struct sock *sk, char __user *optva
 
 	sp = sctp_sk(sk);
 
-	if (!net->sctp.addip_enable)
+	if (!sp->ep->asconf_enable)
 		return -EPERM;
 
 	if (optlen != sizeof(struct sctp_setpeerprim))
@@ -8387,7 +8386,8 @@ static void __sctp_write_space(struct sctp_association *asoc)
 		wq = rcu_dereference(sk->sk_wq);
 		if (wq) {
 			if (waitqueue_active(&wq->wait))
-				wake_up_interruptible(&wq->wait);
+				wake_up_interruptible_poll(&wq->wait, EPOLLOUT |
+						EPOLLWRNORM | EPOLLWRBAND);
 
 			/* Note that we try to include the Async I/O support
 			 * here by modeling from the current TCP/UDP code.
@@ -8508,8 +8508,9 @@ void sctp_sock_rfree(struct sk_buff *skb)
 
 
 /* Helper function to wait for space in the sndbuf.  */
-static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
-				size_t msg_len)
+static int sctp_wait_for_sndbuf(struct sctp_association *asoc,
+				struct sctp_transport *transport,
+				long *timeo_p, size_t msg_len)
 {
 	struct sock *sk = asoc->base.sk;
 	long current_timeo = *timeo_p;
@@ -8519,7 +8520,9 @@ static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
 	pr_debug("%s: asoc:%p, timeo:%ld, msg_len:%zu\n", __func__, asoc,
 		 *timeo_p, msg_len);
 
-	/* Increment the association's refcnt.  */
+	/* Increment the transport and association's refcnt. */
+	if (transport)
+		sctp_transport_hold(transport);
 	sctp_association_hold(asoc);
 
 	/* Wait on the association specific sndbuf space. */
@@ -8528,7 +8531,7 @@ static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
 					  TASK_INTERRUPTIBLE);
 		if (asoc->base.dead)
 			goto do_dead;
-		if (!*timeo_p)
+		if ((!*timeo_p) || (transport && transport->dead))
 			goto do_nonblock;
 		if (sk->sk_err || asoc->state >= SCTP_STATE_SHUTDOWN_PENDING)
 			goto do_error;
@@ -8555,7 +8558,9 @@ static int sctp_wait_for_sndbuf(struct sctp_association *asoc, long *timeo_p,
 out:
 	finish_wait(&asoc->wait, &wait);
 
-	/* Release the association's refcnt.  */
+	/* Release the transport and association's refcnt. */
+	if (transport)
+		sctp_transport_put(transport);
 	sctp_association_put(asoc);
 
 	return err;

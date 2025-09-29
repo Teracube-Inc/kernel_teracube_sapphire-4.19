@@ -66,7 +66,7 @@ struct bio_slab {
 	struct kmem_cache *slab;
 	unsigned int slab_ref;
 	unsigned int slab_size;
-	char name[8];
+	char name[12];
 };
 static DEFINE_MUTEX(bio_slab_lock);
 static struct bio_slab *bio_slabs;
@@ -613,6 +613,11 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
 
+#if defined(CONFIG_MTK_HW_FDE)
+	/* for FDE */
+	bio->bi_hw_fde = bio_src->bi_hw_fde;
+	bio->bi_key_idx = bio_src->bi_key_idx;
+#endif
 	bio_clone_blkcg_association(bio, bio_src);
 }
 EXPORT_SYMBOL(__bio_clone_fast);

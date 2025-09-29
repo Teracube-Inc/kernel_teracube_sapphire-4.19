@@ -892,7 +892,7 @@ dtb-$(CONFIG_ARCH_SOCFPGA) += \
 	socfpga_arria10_socdk_sdmmc.dtb \
 	socfpga_cyclone5_mcvevk.dtb \
 	socfpga_cyclone5_socdk.dtb \
-	socfpga_cyclone5_de0_sockit.dtb \
+	socfpga_cyclone5_de0_nano_soc.dtb \
 	socfpga_cyclone5_sockit.dtb \
 	socfpga_cyclone5_socrates.dtb \
 	socfpga_cyclone5_sodia.dtb \
@@ -1184,17 +1184,6 @@ dtb-$(CONFIG_MACH_DOVE) += \
 	dove-d3plug.dtb \
 	dove-dove-db.dtb \
 	dove-sbc-a510.dtb
-dtb-$(CONFIG_ARCH_MEDIATEK) += \
-	mt2701-evb.dtb \
-	mt6580-evbp1.dtb \
-	mt6589-aquaris5.dtb \
-	mt6592-evb.dtb \
-	mt7623a-rfb-emmc.dtb \
-	mt7623a-rfb-nand.dtb \
-	mt7623n-rfb-emmc.dtb \
-	mt7623n-bananapi-bpi-r2.dtb \
-	mt8127-moose.dtb \
-	mt8135-evbp1.dtb
 dtb-$(CONFIG_ARCH_ZX) += zx296702-ad1.dtb
 dtb-$(CONFIG_ARCH_ASPEED) += \
 	aspeed-ast2500-evb.dtb \

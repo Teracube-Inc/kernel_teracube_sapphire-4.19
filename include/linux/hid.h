@@ -675,8 +675,9 @@ struct hid_descriptor {
 	__le16 bcdHID;
 	__u8  bCountryCode;
 	__u8  bNumDescriptors;
+	struct hid_class_descriptor rpt_desc;
 
-	struct hid_class_descriptor desc[1];
+	struct hid_class_descriptor opt_descs[];
 } __attribute__ ((packed));
 
 #define HID_DEVICE(b, g, ven, prod)					\
@@ -1007,7 +1008,7 @@ static inline void hid_map_usage(struct hid_input *hidinput,
 
 	if (unlikely(c > limit || !bmap)) {
 		pr_warn_ratelimited("%s: Invalid code %d type %d\n",
-				    input->name, c, type);
+				input->name, c, type);
 		*bit = NULL;
 		return;
 	}

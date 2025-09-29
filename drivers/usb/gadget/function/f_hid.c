@@ -114,8 +114,8 @@ static struct hid_descriptor hidg_desc = {
 	.bcdHID				= cpu_to_le16(0x0101),
 	.bCountryCode			= 0x00,
 	.bNumDescriptors		= 0x1,
-	/*.desc[0].bDescriptorType	= DYNAMIC */
-	/*.desc[0].wDescriptorLenght	= DYNAMIC */
+	/*.rpt_desc.bDescriptorType	= DYNAMIC */
+	/*.rpt_desc.wDescriptorLength	= DYNAMIC */
 };
 
 /* Super-Speed Support */
@@ -730,8 +730,8 @@ static int hidg_setup(struct usb_function *f,
 			struct hid_descriptor hidg_desc_copy = hidg_desc;
 
 			VDBG(cdev, "USB_REQ_GET_DESCRIPTOR: HID\n");
-			hidg_desc_copy.desc[0].bDescriptorType = HID_DT_REPORT;
-			hidg_desc_copy.desc[0].wDescriptorLength =
+			hidg_desc_copy.rpt_desc.bDescriptorType = HID_DT_REPORT;
+			hidg_desc_copy.rpt_desc.wDescriptorLength =
 				cpu_to_le16(hidg->report_desc_length);
 
 			length = min_t(unsigned short, length,
@@ -972,8 +972,8 @@ static int hidg_bind(struct usb_configuration *c, struct usb_function *f)
 	 * We can use hidg_desc struct here but we should not relay
 	 * that its content won't change after returning from this function.
 	 */
-	hidg_desc.desc[0].bDescriptorType = HID_DT_REPORT;
-	hidg_desc.desc[0].wDescriptorLength =
+	hidg_desc.rpt_desc.bDescriptorType = HID_DT_REPORT;
+	hidg_desc.rpt_desc.wDescriptorLength =
 		cpu_to_le16(hidg->report_desc_length);
 
 	hidg_hs_in_ep_desc.bEndpointAddress =
@@ -1262,6 +1262,19 @@ static void hidg_unbind(struct usb_configuration *c, struct usb_function *f)
 	usb_free_all_descriptors(f);
 }
 
+static struct hidg_func_descriptor hid_data = {
+	.subclass = 0,      /* No subclass */
+	.protocol = 0,      /* Mouse Protocol */
+	.report_length = 4,
+	.report_desc_length = 7,
+	.report_desc = {
+		0x05, 0x01, /* USAGE_PAGE (Generic Desktop)     */
+		0x09, 0x00, /* USAGE (None)             */
+		0xa1, 0x01, /* COLLECTION (Application)     */
+		0xc0        /* END_COLLECTION           */
+	}
+};
+
 static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 {
 	struct f_hidg *hidg;
@@ -1305,6 +1318,21 @@ static struct usb_function *hidg_alloc(struct usb_function_instance *fi)
 		}
 	}
 	hidg->use_out_ep = !opts->no_out_endpoint;
+
+	/* HACK, replace content, duplicate code from above */
+	hidg->bInterfaceSubClass = hid_data.subclass;
+	hidg->bInterfaceProtocol = hid_data.protocol;
+	hidg->report_length = hid_data.report_length;
+	hidg->report_desc_length = hid_data.report_desc_length;
+	hidg->report_desc = kmemdup(hid_data.report_desc,
+			hid_data.report_desc_length,
+			GFP_KERNEL);
+	if (!hidg->report_desc) {
+		kfree(hidg);
+		mutex_unlock(&opts->lock);
+		return ERR_PTR(-ENOMEM);
+	}
+
 
 	mutex_unlock(&opts->lock);
 

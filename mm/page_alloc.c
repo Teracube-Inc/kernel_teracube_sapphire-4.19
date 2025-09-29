@@ -74,6 +74,10 @@
 #include <asm/div64.h>
 #include "internal.h"
 
+#if defined(CONFIG_DMAUSER_PAGES)
+#include <mt-plat/aee.h>
+#endif
+
 /* prevent >1 _updater_ of zone percpu pageset ->high and ->batch fields */
 static DEFINE_MUTEX(pcp_batch_high_lock);
 #define MIN_PERCPU_PAGELIST_FRACTION	(8)
@@ -4267,6 +4271,8 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 	unsigned int cpuset_mems_cookie;
 	unsigned int zonelist_iter_cookie;
 	int reserve_flags;
+	pg_data_t *pgdat = ac->preferred_zoneref->zone->zone_pgdat;
+	bool woke_kswapd = false;
 
 	/*
 	 * We also sanity check to catch abuse of atomic reserves being used by
@@ -4279,6 +4285,7 @@ __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 restart:
 	compaction_retries = 0;
 	no_progress_loops = 0;
+	compact_result = COMPACT_SKIPPED;
 	compact_priority = DEF_COMPACT_PRIORITY;
 	cpuset_mems_cookie = read_mems_allowed_begin();
 	zonelist_iter_cookie = zonelist_iter_begin();
@@ -4301,8 +4308,13 @@ restart:
 	if (!ac->preferred_zoneref->zone)
 		goto nopage;
 
-	if (gfp_mask & __GFP_KSWAPD_RECLAIM)
+	if (gfp_mask & __GFP_KSWAPD_RECLAIM) {
+		if (!woke_kswapd) {
+			atomic_inc(&pgdat->kswapd_waiters);
+			woke_kswapd = true;
+		}
 		wake_all_kswapds(order, gfp_mask, ac);
+	}
 
 	/*
 	 * The adjusted alloc_flags might result in immediate success, so try
@@ -4358,6 +4370,14 @@ restart:
 	}
 
 retry:
+	/*
+	 * Deal with possible cpuset update races or zonelist updates to avoid
+	 * infinite retries.
+	 */
+	if (check_retry_cpuset(cpuset_mems_cookie, ac) ||
+	    check_retry_zonelist(zonelist_iter_cookie))
+		goto restart;
+
 	/* Ensure kswapd doesn't accidentally go to sleep as long as we loop */
 	if (gfp_mask & __GFP_KSWAPD_RECLAIM)
 		wake_all_kswapds(order, gfp_mask, ac);
@@ -4506,9 +4526,12 @@ nopage:
 		goto retry;
 	}
 fail:
-	warn_alloc(gfp_mask, ac->nodemask,
-			"page allocation failure: order:%u", order);
 got_pg:
+	if (woke_kswapd)
+		atomic_dec(&pgdat->kswapd_waiters);
+	if (!page)
+		warn_alloc(gfp_mask, ac->nodemask,
+				"page allocation failure: order:%u", order);
 	return page;
 }
 
@@ -4568,6 +4591,9 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 {
 	struct page *page;
 	unsigned int alloc_flags = ALLOC_WMARK_LOW;
+#ifdef CONFIG_DMAUSER_PAGES
+	static bool __section(.data.unlikely) __dmawarned;
+#endif
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
 
@@ -4618,7 +4644,19 @@ out:
 	}
 
 	trace_mm_page_alloc(page, order, alloc_mask, ac.migratetype);
-
+#if defined(CONFIG_DMAUSER_PAGES)
+	/*
+	 * make sure DMA pages cannot be allocated to non-GFP_DMA users
+	 */
+	if (page && !(gfp_mask & GFP_DMA) &&
+			(page_zonenum(page) == OPT_ZONE_DMA)) {
+		if (unlikely(!__dmawarned)) {
+			__dmawarned = true;
+			aee_kernel_warning("large memory",
+					"out of high-end memory");
+		}
+	}
+#endif
 	return page;
 }
 EXPORT_SYMBOL(__alloc_pages_nodemask);
@@ -6482,6 +6520,7 @@ static void __meminit pgdat_init_internals(struct pglist_data *pgdat)
 	pgdat_page_ext_init(pgdat);
 	spin_lock_init(&pgdat->lru_lock);
 	lruvec_init(node_lruvec(pgdat));
+	pgdat->kswapd_waiters = (atomic_t)ATOMIC_INIT(0);
 }
 
 static void __meminit zone_init_internals(struct zone *zone, enum zone_type idx, int nid,

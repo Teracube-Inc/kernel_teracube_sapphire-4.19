@@ -684,6 +684,9 @@ struct request_queue {
 
 #define BLK_MAX_WRITE_HINTS	5
 	u64			write_hints[BLK_MAX_WRITE_HINTS];
+#ifdef CONFIG_SCSI_UFS_TW
+	bool			turbo_write_dev;
+#endif
 };
 
 #define QUEUE_FLAG_QUEUED	0	/* uses generic tag queueing */
@@ -2002,6 +2005,7 @@ struct block_device_operations {
 	int (*set_read_only)(struct block_device *bdev, bool ro);
 	/* this callback is with swap_lock and sometimes page table lock held */
 	void (*swap_slot_free_notify) (struct block_device *, unsigned long);
+	int (*check_disk_range_wp)(struct gendisk *d, sector_t s, sector_t l);
 	struct module *owner;
 	const struct pr_ops *pr_ops;
 };

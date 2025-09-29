@@ -596,6 +596,8 @@ static int uvc_v4l2_release(struct file *file)
 
 	uvc_trace(UVC_TRACE_CALLS, "uvc_v4l2_release\n");
 
+	uvc_ctrl_cleanup_fh(handle);
+
 	/* Only free resources if this is a privileged handle. */
 	if (uvc_has_privileges(handle))
 		uvc_queue_release(&stream->queue);
@@ -784,7 +786,8 @@ static int uvc_ioctl_qbuf(struct file *file, void *fh, struct v4l2_buffer *buf)
 	if (!uvc_has_privileges(handle))
 		return -EBUSY;
 
-	return uvc_queue_buffer(&stream->queue, buf);
+	return uvc_queue_buffer(&stream->queue,
+				stream->vdev.v4l2_dev->mdev, buf);
 }
 
 static int uvc_ioctl_expbuf(struct file *file, void *fh,

@@ -794,8 +794,7 @@ try_again:
 			retries--;
 			goto try_again;
 		} else if (err) {
-			retries = 0;
-			goto try_again;
+			return err;
 		}
 	}
 

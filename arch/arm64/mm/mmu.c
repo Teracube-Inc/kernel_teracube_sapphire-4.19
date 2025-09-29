@@ -128,7 +128,7 @@ static phys_addr_t __init early_pgtable_alloc(void)
 	 */
 	ptr = pte_set_fixmap(phys);
 
-	memset(ptr, 0, PAGE_SIZE);
+	clear_page(ptr);
 
 	/*
 	 * Implicit barriers also ensure the zeroed page is visible to the page
@@ -1078,7 +1078,8 @@ int pud_free_pmd_page(pud_t *pudp, unsigned long addr)
 	next = addr;
 	end = addr + PUD_SIZE;
 	do {
-		pmd_free_pte_page(pmdp, next);
+		if (pmd_present(READ_ONCE(*pmdp)))
+			pmd_free_pte_page(pmdp, next);
 	} while (pmdp++, next += PMD_SIZE, next != end);
 
 	pud_clear(pudp);

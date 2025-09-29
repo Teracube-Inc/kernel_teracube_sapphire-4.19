@@ -481,7 +481,19 @@ static bool dump_interrupted(void)
 	 * but then we need to teach dump_write() to restart and clear
 	 * TIF_SIGPENDING.
 	 */
+#ifdef CONFIG_MTK_AEE_FEATURE
+	/* avoid coredump truncated */
+	int ret = signal_pending(current);
+
+	if (ret) {
+		pr_info("%s: clear sig pending flag\n", __func__);
+		clear_thread_flag(TIF_SIGPENDING);
+		ret = signal_pending(current);
+	}
+	return ret;
+#else
 	return signal_pending(current);
+#endif
 }
 
 static void wait_for_dump_helpers(struct file *file)
@@ -522,7 +534,9 @@ static int umh_pipe_setup(struct subprocess_info *info, struct cred *new)
 {
 	struct file *files[2];
 	struct coredump_params *cp = (struct coredump_params *)info->data;
-	int err = create_pipe_files(files, 0);
+	int err;
+
+	err = create_pipe_files(files, 0);
 	if (err)
 		return err;
 
@@ -530,11 +544,61 @@ static int umh_pipe_setup(struct subprocess_info *info, struct cred *new)
 
 	err = replace_fd(0, files[0], 0);
 	fput(files[0]);
+	if (err < 0)
+		return err;
+
 	/* and disallow core files too */
 	current->signal->rlim[RLIMIT_CORE] = (struct rlimit){1, 1};
 
-	return err;
+	return 0;
 }
+
+#if defined(CONFIG_MTK_AEE_FEATURE) && defined(CONFIG_MTK_ENG_BUILD)
+#include <linux/suspend.h>
+
+static atomic_t coredump_request_count = ATOMIC_INIT(0);
+
+static int coredump_pm_notifier_cb(struct notifier_block *nb,
+	unsigned long event, void *ptr)
+{
+	switch (event) {
+	case PM_SUSPEND_PREPARE:
+		if (atomic_read(&coredump_request_count) > 0) {
+			pr_info("%s coredump is on going", __func__);
+			return NOTIFY_BAD;
+		} else
+			return NOTIFY_DONE;
+	default:
+		return NOTIFY_DONE;
+	}
+	return NOTIFY_DONE;
+}
+
+/* Hibernation and suspend events */
+static struct notifier_block coredump_pm_notifier_block = {
+	.notifier_call = coredump_pm_notifier_cb,
+};
+
+static int __init init_coredump(void)
+{
+	/* register pm notifier */
+	int ret = register_pm_notifier(&coredump_pm_notifier_block);
+
+	if (ret)
+		pr_info("%s: failed to register_pm_notifier(%d)\n",
+				__func__, ret);
+	return 0;
+}
+
+static void __exit exit_coredump(void)
+{
+	/* unregister pm notifier */
+	unregister_pm_notifier(&coredump_pm_notifier_block);
+}
+
+late_initcall(init_coredump);
+module_exit(exit_coredump);
+#endif
 
 void do_coredump(const siginfo_t *siginfo)
 {
@@ -562,6 +626,11 @@ void do_coredump(const siginfo_t *siginfo)
 		 */
 		.mm_flags = mm->flags,
 	};
+
+#if defined(CONFIG_MTK_AEE_FEATURE) && defined(CONFIG_MTK_ENG_BUILD)
+
+	atomic_inc(&coredump_request_count);
+#endif
 
 	audit_core_dumps(siginfo->si_signo);
 
@@ -742,7 +811,7 @@ void do_coredump(const siginfo_t *siginfo)
 			goto close_fail;
 		if (!(cprm.file->f_mode & FMODE_CAN_WRITE))
 			goto close_fail;
-		if (do_truncate(cprm.file->f_path.dentry, 0, 0, cprm.file))
+		if (do_truncate2(cprm.file->f_path.mnt, cprm.file->f_path.dentry, 0, 0, cprm.file))
 			goto close_fail;
 	}
 
@@ -780,6 +849,9 @@ fail_unlock:
 fail_creds:
 	put_cred(cred);
 fail:
+#if defined(CONFIG_MTK_AEE_FEATURE) && defined(CONFIG_MTK_ENG_BUILD)
+	atomic_dec(&coredump_request_count);
+#endif
 	return;
 }
 
@@ -796,11 +868,33 @@ int dump_emit(struct coredump_params *cprm, const void *addr, int nr)
 	if (cprm->written + nr > cprm->limit)
 		return 0;
 	while (nr) {
-		if (dump_interrupted())
+		if (dump_interrupted()) {
+			pr_info("%s: interrupted\n", __func__);
 			return 0;
+		}
 		n = __kernel_write(file, addr, nr, &pos);
-		if (n <= 0)
+		if (n <= 0) {
+			pr_info("%s: __kernel_write fail: %zd\n", __func__, n);
+#ifdef CONFIG_MTK_AEE_FEATURE
+			/* retry for avoid coredump truncated */
+			if (n == -ERESTARTSYS) {
+				if (signal_pending(current)) {
+					pr_info("%s: clear sig pending flag\n",
+						__func__);
+					clear_thread_flag(TIF_SIGPENDING);
+				}
+				n = __kernel_write(file, addr, nr, &pos);
+				if (n <= 0) {
+					pr_info("%s: retry fail: %zd\n",
+						__func__, n);
+					return 0;
+				}
+			} else
+				return 0;
+#else
 			return 0;
+#endif
+		}
 		file->f_pos = pos;
 		cprm->written += n;
 		cprm->pos += n;
