@@ -32,6 +32,9 @@ config HAVE_DYNAMIC_FTRACE
 config HAVE_DYNAMIC_FTRACE_WITH_REGS
 	bool
 
+config HAVE_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+	bool
+
 config HAVE_FTRACE_MCOUNT_RECORD
 	bool
 	help
@@ -105,7 +108,6 @@ config PREEMPTIRQ_TRACEPOINTS
 
 config TRACING
 	bool
-	select DEBUG_FS
 	select RING_BUFFER
 	select STACKTRACE if STACKTRACE_SUPPORT
 	select TRACEPOINTS
@@ -117,6 +119,20 @@ config TRACING
 config GENERIC_TRACER
 	bool
 	select TRACING
+
+if TRACING
+
+config DISABLE_TRACE_PRINTK
+	bool "Force disable trace_printk() usage"
+	default y
+	help
+	  When trace_printk() is used in any of the kernel source, it enables
+	  debugging functions which are not desired for production kernel.
+	  Enabling this option will replace trace_printk() with pr_debug().
+
+	  If in doubt, say Y.
+
+endif
 
 #
 # Minimum requirements an architecture has to meet for us to
@@ -552,6 +568,11 @@ config DYNAMIC_FTRACE_WITH_REGS
 	depends on DYNAMIC_FTRACE
 	depends on HAVE_DYNAMIC_FTRACE_WITH_REGS
 
+config DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+	def_bool y
+	depends on DYNAMIC_FTRACE
+	depends on HAVE_DYNAMIC_FTRACE_WITH_DIRECT_CALLS
+
 config FUNCTION_PROFILER
 	bool "Kernel function profiler"
 	depends on FUNCTION_TRACER
@@ -790,7 +811,41 @@ config GCOV_PROFILE_FTRACE
 	  Note that on a kernel compiled with this config, ftrace will
 	  run significantly slower.
 
+config MMSTAT_TRACER
+	tristate "Trace memory status periodically"
+	default m
+	help
+	  Periodic tracing of memory status.
+
+	  Mmstat tracer will track memory usage periodically according to
+	  indicated timer interval, which includes meminfo, buddy system,
+	  hardware memory(if possible) and process memory.
+
 endif # FTRACE
 
 endif # TRACING_SUPPORT
+
+if TRACING
+# MTK enhancements
+config MTK_FTRACER
+	bool "MTK Ftracer"
+	select CONTEXT_SWITCH_TRACER
+	help
+	  Mediatek ftrace enhancements to linux kernel, include boot trace
+	  and debug information. print enabled events list on trace log,
+	  developers can better analyze the problem
+
+	  If unsure, say N
+
+config MTK_FTRACE_DEFAULT_ENABLE
+	bool "enable events by default"
+	depends on MTK_FTRACER
+	help
+	  Enable ftrace at bootup e.g., enlarge ring_buffer size and enable
+	  configured events at bootup. With ftrace enabled and trace collected
+	  at exceptions, developers can better analyze the problem
+
+	  If unsure, say N
+
+endif # TRACING
 

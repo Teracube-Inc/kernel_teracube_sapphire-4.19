@@ -628,6 +628,9 @@ static enum power_supply_property bq27541_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_HEALTH,
 	POWER_SUPPLY_PROP_MANUFACTURER,
+#if defined(CONFIG_MACH_MT6893)
+	POWER_SUPPLY_PROP_CHARGE_COUNTER
+#endif
 };
 #define bq27542_props bq27541_props
 #define bq27546_props bq27541_props
@@ -1775,18 +1778,44 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 {
 	int ret = 0;
 	struct bq27xxx_device_info *di = power_supply_get_drvdata(psy);
-
+#if defined(CONFIG_MACH_MT6893)
+	struct power_supply *chg_psy;
+	union power_supply_propval online_val;
+	union power_supply_propval type_val;
+#endif
 	mutex_lock(&di->lock);
 	if (time_is_before_jiffies(di->last_update + 5 * HZ))
 		bq27xxx_battery_update_unlocked(di);
 	mutex_unlock(&di->lock);
 
+#if defined(CONFIG_MACH_MT6893)
+	chg_psy = power_supply_get_by_name("charger");
+	if (chg_psy == NULL) {
+		pr_info("[%s] can get charger psy\n", __func__);
+	} else {
+		power_supply_get_property(chg_psy, POWER_SUPPLY_PROP_ONLINE, &online_val);
+		power_supply_get_property(chg_psy, POWER_SUPPLY_PROP_CHARGE_TYPE, &type_val);
+	}
+#endif
 	if (psp != POWER_SUPPLY_PROP_PRESENT && di->cache.flags < 0)
 		return di->cache.flags;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_STATUS:
 		ret = bq27xxx_battery_status(di, val);
+#if defined(CONFIG_MACH_MT6893)
+		pr_info("gauge charger status(%d), charger online_val.intval(%d), type_val.intval(%d)",
+			val->intval, online_val.intval, type_val.intval);
+		if ((val->intval == POWER_SUPPLY_STATUS_DISCHARGING) ||
+			(val->intval == POWER_SUPPLY_STATUS_NOT_CHARGING) ||
+			(val->intval == POWER_SUPPLY_STATUS_UNKNOWN)) {
+			if (online_val.intval && (type_val.intval != 0))
+				val->intval = POWER_SUPPLY_STATUS_CHARGING;
+		} else if ((val->intval == POWER_SUPPLY_STATUS_CHARGING) &&
+			!(online_val.intval) && !(type_val.intval)) {
+			val->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		}
+#endif
 		break;
 	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = bq27xxx_battery_voltage(di, val);
@@ -1851,6 +1880,13 @@ static int bq27xxx_battery_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_MANUFACTURER:
 		val->strval = BQ27XXX_MANUFACTURER;
 		break;
+#if defined(CONFIG_MACH_MT6893)
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		ret = bq27xxx_simple_value(di->cache.capacity, val);
+		if (val->intval >= 0)
+			val->intval = ((val->intval) * 8000) / 100;
+		break;
+#endif
 	default:
 		return -EINVAL;
 	}
@@ -1886,7 +1922,11 @@ int bq27xxx_battery_setup(struct bq27xxx_device_info *di)
 	if (!psy_desc)
 		return -ENOMEM;
 
+#if defined(CONFIG_MACH_MT6893)
+	psy_desc->name = "battery";
+#else
 	psy_desc->name = di->name;
+#endif
 	psy_desc->type = POWER_SUPPLY_TYPE_BATTERY;
 	psy_desc->properties = bq27xxx_chip_data[di->chip].props;
 	psy_desc->num_properties = bq27xxx_chip_data[di->chip].props_size;

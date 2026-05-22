@@ -66,6 +66,7 @@
 #include <net/l3mdev.h>
 #include <net/ip.h>
 #include <linux/uaccess.h>
+#include <linux/btf_ids.h>
 
 #ifdef CONFIG_SYSCTL
 #include <linux/sysctl.h>
@@ -93,7 +94,7 @@ static void		ip6_negative_advice(struct sock *sk,
 static void		ip6_dst_destroy(struct dst_entry *);
 static void		ip6_dst_ifdown(struct dst_entry *,
 				       struct net_device *dev, int how);
-static void		 ip6_dst_gc(struct dst_ops *ops);
+static int		 ip6_dst_gc(struct dst_ops *ops);
 
 static int		ip6_pkt_discard(struct sk_buff *skb);
 static int		ip6_pkt_discard_out(struct net *net, struct sock *sk, struct sk_buff *skb);
@@ -2777,30 +2778,32 @@ out:
 	return dst;
 }
 
-static void ip6_dst_gc(struct dst_ops *ops)
+static int ip6_dst_gc(struct dst_ops *ops)
 {
 	struct net *net = container_of(ops, struct net, ipv6.ip6_dst_ops);
 	int rt_min_interval = net->ipv6.sysctl.ip6_rt_gc_min_interval;
+	int rt_max_size = net->ipv6.sysctl.ip6_rt_max_size;
 	int rt_elasticity = net->ipv6.sysctl.ip6_rt_gc_elasticity;
 	int rt_gc_timeout = net->ipv6.sysctl.ip6_rt_gc_timeout;
 	unsigned long rt_last_gc = net->ipv6.ip6_rt_last_gc;
-	unsigned int val;
 	int entries;
 
 	entries = dst_entries_get_fast(ops);
-	if (entries > ops->gc_thresh)
+	if (entries > rt_max_size)
 		entries = dst_entries_get_slow(ops);
 
-	if (time_after(rt_last_gc + rt_min_interval, jiffies))
+	if (time_after(rt_last_gc + rt_min_interval, jiffies) &&
+	    entries <= rt_max_size)
 		goto out;
 
-	fib6_run_gc(atomic_inc_return(&net->ipv6.ip6_rt_gc_expire), net, true);
+	net->ipv6.ip6_rt_gc_expire++;
+	fib6_run_gc(net->ipv6.ip6_rt_gc_expire, net, true);
 	entries = dst_entries_get_slow(ops);
 	if (entries < ops->gc_thresh)
-		atomic_set(&net->ipv6.ip6_rt_gc_expire, rt_gc_timeout >> 1);
+		net->ipv6.ip6_rt_gc_expire = rt_gc_timeout>>1;
 out:
-	val = atomic_read(&net->ipv6.ip6_rt_gc_expire);
-	atomic_set(&net->ipv6.ip6_rt_gc_expire, val - (val >> rt_elasticity));
+	net->ipv6.ip6_rt_gc_expire -= net->ipv6.ip6_rt_gc_expire>>rt_elasticity;
+	return entries > rt_max_size;
 }
 
 static int ip6_convert_metrics(struct net *net, struct fib6_info *rt,
@@ -3540,7 +3543,7 @@ static struct fib6_info *rt6_get_route_info(struct net *net,
 					   const struct in6_addr *gwaddr,
 					   struct net_device *dev)
 {
-	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO;
+	u32 tb_id = l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_INFO);
 	int ifindex = dev->ifindex;
 	struct fib6_node *fn;
 	struct fib6_info *rt = NULL;
@@ -3590,7 +3593,7 @@ static struct fib6_info *rt6_add_route_info(struct net *net,
 		.fc_nlinfo.nl_net = net,
 	};
 
-	cfg.fc_table = l3mdev_fib_table(dev) ? : RT6_TABLE_INFO,
+	cfg.fc_table = l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_INFO),
 	cfg.fc_dst = *prefix;
 	cfg.fc_gateway = *gwaddr;
 
@@ -3608,7 +3611,7 @@ struct fib6_info *rt6_get_dflt_router(struct net *net,
 				     const struct in6_addr *addr,
 				     struct net_device *dev)
 {
-	u32 tb_id = l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT;
+	u32 tb_id = l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_DFLT);
 	struct fib6_info *rt;
 	struct fib6_table *table;
 
@@ -3629,13 +3632,37 @@ struct fib6_info *rt6_get_dflt_router(struct net *net,
 	return rt;
 }
 
+struct fib6_info *rt6_get_dflt_router_expires(struct net_device *dev)
+{
+	struct fib6_info *rt;
+	struct fib6_table *table;
+	#define RTF_ADGE (RTF_ADDRCONF | RTF_DEFAULT \
+		| RTF_GATEWAY | RTF_EXPIRES)
+
+	table = fib6_get_table(dev_net(dev),
+			       addrconf_rt_table(dev, RT6_TABLE_MAIN));
+	if (!table)
+		return NULL;
+
+	rcu_read_lock();
+	for_each_fib6_node_rt_rcu(&table->tb6_root) {
+		if (dev == rt->fib6_nh.nh_dev &&
+		    ((rt->fib6_flags & RTF_ADGE) == RTF_ADGE))
+			break;
+	}
+	if (rt && !fib6_info_hold_safe(rt))
+		rt = NULL;
+	rcu_read_unlock();
+	return rt;
+}
+
 struct fib6_info *rt6_add_dflt_router(struct net *net,
 				     const struct in6_addr *gwaddr,
 				     struct net_device *dev,
 				     unsigned int pref)
 {
 	struct fib6_config cfg = {
-		.fc_table	= l3mdev_fib_table(dev) ? : RT6_TABLE_DFLT,
+		.fc_table	= l3mdev_fib_table(dev) ? : addrconf_rt_table(dev, RT6_TABLE_DFLT),
 		.fc_metric	= IP6_RT_PRIO_USER,
 		.fc_ifindex	= dev->ifindex,
 		.fc_flags	= RTF_GATEWAY | RTF_ADDRCONF | RTF_DEFAULT |
@@ -3660,47 +3687,24 @@ struct fib6_info *rt6_add_dflt_router(struct net *net,
 	return rt6_get_dflt_router(net, gwaddr, dev);
 }
 
-static void __rt6_purge_dflt_routers(struct net *net,
-				     struct fib6_table *table)
+static int rt6_addrconf_purge(struct fib6_info *rt, void *arg)
 {
-	struct fib6_info *rt;
+	struct net_device *dev = fib6_info_nh_dev(rt);
+	struct inet6_dev *idev = dev ? __in6_dev_get(dev) : NULL;
 
-restart:
-	rcu_read_lock();
-	for_each_fib6_node_rt_rcu(&table->tb6_root) {
-		struct net_device *dev = fib6_info_nh_dev(rt);
-		struct inet6_dev *idev = dev ? __in6_dev_get(dev) : NULL;
-
-		if (rt->fib6_flags & (RTF_DEFAULT | RTF_ADDRCONF) &&
-		    (!idev || idev->cnf.accept_ra != 2) &&
-		    fib6_info_hold_safe(rt)) {
-			rcu_read_unlock();
-			ip6_del_rt(net, rt);
-			goto restart;
-		}
+	if (rt->fib6_flags & (RTF_DEFAULT | RTF_ADDRCONF) &&
+	    (!idev || idev->cnf.accept_ra != 2)) {
+		/* Delete this route. See fib6_clean_tree() */
+		return -1;
 	}
-	rcu_read_unlock();
 
-	table->flags &= ~RT6_TABLE_HAS_DFLT_ROUTER;
+	/* Continue walking */
+	return 0;
 }
 
 void rt6_purge_dflt_routers(struct net *net)
 {
-	struct fib6_table *table;
-	struct hlist_head *head;
-	unsigned int h;
-
-	rcu_read_lock();
-
-	for (h = 0; h < FIB6_TABLE_HASHSZ; h++) {
-		head = &net->ipv6.fib_table_hash[h];
-		hlist_for_each_entry_rcu(table, head, tb6_hlist) {
-			if (table->flags & RT6_TABLE_HAS_DFLT_ROUTER)
-				__rt6_purge_dflt_routers(net, table);
-		}
-	}
-
-	rcu_read_unlock();
+	fib6_clean_all(net, rt6_addrconf_purge, NULL);
 }
 
 static void rtmsg_to_fib6_config(struct net *net,
@@ -5169,9 +5173,8 @@ static int rt6_stats_seq_show(struct seq_file *seq, void *v)
 
 #ifdef CONFIG_SYSCTL
 
-static
-int ipv6_sysctl_rtcache_flush(struct ctl_table *ctl, int write,
-			      void __user *buffer, size_t *lenp, loff_t *ppos)
+static int ipv6_sysctl_rtcache_flush(struct ctl_table *ctl, int write,
+			      void *buffer, size_t *lenp, loff_t *ppos)
 {
 	struct net *net;
 	int delay;
@@ -5340,7 +5343,7 @@ static int __net_init ip6_route_net_init(struct net *net)
 #endif
 
 	net->ipv6.sysctl.flush_delay = 0;
-	net->ipv6.sysctl.ip6_rt_max_size = INT_MAX;
+	net->ipv6.sysctl.ip6_rt_max_size = 4096;
 	net->ipv6.sysctl.ip6_rt_gc_min_interval = HZ / 2;
 	net->ipv6.sysctl.ip6_rt_gc_timeout = 60*HZ;
 	net->ipv6.sysctl.ip6_rt_gc_interval = 30*HZ;
@@ -5348,7 +5351,7 @@ static int __net_init ip6_route_net_init(struct net *net)
 	net->ipv6.sysctl.ip6_rt_mtu_expires = 10*60*HZ;
 	net->ipv6.sysctl.ip6_rt_min_advmss = IPV6_MIN_MTU - 20 - 40;
 
-	atomic_set(&net->ipv6.ip6_rt_gc_expire, 30*HZ);
+	net->ipv6.ip6_rt_gc_expire = 30*HZ;
 
 	ret = 0;
 out:
@@ -5460,6 +5463,43 @@ void __init ip6_route_init_special_entries(void)
   #endif
 }
 
+#if IS_BUILTIN(CONFIG_IPV6)
+#if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_PROC_FS)
+DEFINE_BPF_ITER_FUNC(ipv6_route, struct bpf_iter_meta *meta, struct fib6_info *rt)
+
+BTF_ID_LIST(btf_fib6_info_id)
+BTF_ID(struct, fib6_info)
+
+static const struct bpf_iter_seq_info ipv6_route_seq_info = {
+	.seq_ops		= &ipv6_route_seq_ops,
+	.init_seq_private	= bpf_iter_init_seq_net,
+	.fini_seq_private	= bpf_iter_fini_seq_net,
+	.seq_priv_size		= sizeof(struct ipv6_route_iter),
+};
+
+static struct bpf_iter_reg ipv6_route_reg_info = {
+	.target			= "ipv6_route",
+	.ctx_arg_info_size	= 1,
+	.ctx_arg_info		= {
+		{ offsetof(struct bpf_iter__ipv6_route, rt),
+		  PTR_TO_BTF_ID_OR_NULL },
+	},
+	.seq_info		= &ipv6_route_seq_info,
+};
+
+static int __init bpf_iter_register(void)
+{
+	ipv6_route_reg_info.ctx_arg_info[0].btf_id = *btf_fib6_info_id;
+	return bpf_iter_reg_target(&ipv6_route_reg_info);
+}
+
+static void bpf_iter_unregister(void)
+{
+	bpf_iter_unreg_target(&ipv6_route_reg_info);
+}
+#endif
+#endif
+
 int __init ip6_route_init(void)
 {
 	int ret;
@@ -5522,6 +5562,14 @@ int __init ip6_route_init(void)
 	if (ret)
 		goto out_register_late_subsys;
 
+#if IS_BUILTIN(CONFIG_IPV6)
+#if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_PROC_FS)
+	ret = bpf_iter_register();
+	if (ret)
+		goto out_register_late_subsys;
+#endif
+#endif
+
 	for_each_possible_cpu(cpu) {
 		struct uncached_list *ul = per_cpu_ptr(&rt6_uncached_list, cpu);
 
@@ -5554,6 +5602,11 @@ out_kmem_cache:
 
 void ip6_route_cleanup(void)
 {
+#if IS_BUILTIN(CONFIG_IPV6)
+#if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_PROC_FS)
+	bpf_iter_unregister();
+#endif
+#endif
 	unregister_netdevice_notifier(&ip6_route_dev_notifier);
 	unregister_pernet_subsys(&ip6_route_net_late_ops);
 	fib6_rules_cleanup();

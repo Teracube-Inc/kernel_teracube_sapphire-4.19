@@ -580,7 +580,7 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 
 	/* Let's try to poll to find out when the command is completed. */
 	err = mmc_poll_for_busy(card, timeout_ms, send_status, retry_crc_err);
-	if (err)
+	if (err && err != -ETIMEDOUT)
 		goto out;
 
 out_tim:

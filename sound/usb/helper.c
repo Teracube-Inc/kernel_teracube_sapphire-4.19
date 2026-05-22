@@ -75,6 +75,7 @@ void *snd_usb_find_csint_desc(void *buffer, int buflen, void *after, u8 dsubtype
 	}
 	return NULL;
 }
+EXPORT_SYMBOL_GPL(snd_usb_find_csint_desc);
 
 /* check the validity of pipe and EP types */
 int snd_usb_pipe_sanity_check(struct usb_device *dev, unsigned int pipe)

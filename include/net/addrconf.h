@@ -227,49 +227,6 @@ bool ipv6_chk_mcast_addr(struct net_device *dev, const struct in6_addr *group,
 
 void ipv6_mc_dad_complete(struct inet6_dev *idev);
 
-/* A stub used by vxlan module. This is ugly, ideally these
- * symbols should be built into the core kernel.
- */
-struct ipv6_stub {
-	int (*ipv6_sock_mc_join)(struct sock *sk, int ifindex,
-				 const struct in6_addr *addr);
-	int (*ipv6_sock_mc_drop)(struct sock *sk, int ifindex,
-				 const struct in6_addr *addr);
-	struct dst_entry *(*ipv6_dst_lookup_flow)(struct net *net,
-						  const struct sock *sk,
-						  struct flowi6 *fl6,
-						  const struct in6_addr *final_dst);
-
-	struct fib6_table *(*fib6_get_table)(struct net *net, u32 id);
-	struct fib6_info *(*fib6_lookup)(struct net *net, int oif,
-					 struct flowi6 *fl6, int flags);
-	struct fib6_info *(*fib6_table_lookup)(struct net *net,
-					      struct fib6_table *table,
-					      int oif, struct flowi6 *fl6,
-					      int flags);
-	struct fib6_info *(*fib6_multipath_select)(const struct net *net,
-						   struct fib6_info *f6i,
-						   struct flowi6 *fl6, int oif,
-						   const struct sk_buff *skb,
-						   int strict);
-	u32 (*ip6_mtu_from_fib6)(struct fib6_info *f6i, struct in6_addr *daddr,
-				 struct in6_addr *saddr);
-
-	void (*udpv6_encap_enable)(void);
-	void (*ndisc_send_na)(struct net_device *dev, const struct in6_addr *daddr,
-			      const struct in6_addr *solicited_addr,
-			      bool router, bool solicited, bool override, bool inc_opt);
-	struct neigh_table *nd_tbl;
-};
-extern const struct ipv6_stub *ipv6_stub __read_mostly;
-
-/* A stub used by bpf helpers. Similarly ugly as ipv6_stub */
-struct ipv6_bpf_stub {
-	int (*inet6_bind)(struct sock *sk, struct sockaddr *uaddr, int addr_len,
-			  bool force_bind_address_no_port, bool with_lock);
-};
-extern const struct ipv6_bpf_stub *ipv6_bpf_stub __read_mostly;
-
 /*
  * identify MLD packets for MLD filter exceptions
  */
@@ -297,6 +254,18 @@ static inline bool ipv6_is_mld(struct sk_buff *skb, int nexthdr, int offset)
 
 void addrconf_prefix_rcv(struct net_device *dev,
 			 u8 *opt, int len, bool sllao);
+
+/* Determines into what table to put autoconf PIO/RIO/default routes
+ * learned on this device.
+ *
+ * - If 0, use the same table for every device. This puts routes into
+ *   one of RT_TABLE_{PREFIX,INFO,DFLT} depending on the type of route
+ *   (but note that these three are currently all equal to
+ *   RT6_TABLE_MAIN).
+ * - If > 0, use the specified table.
+ * - If < 0, put routes into table dev->ifindex + (-rt_table).
+ */
+u32 addrconf_rt_table(const struct net_device *dev, u32 default_table);
 
 /*
  *	anycast prototypes (anycast.c)

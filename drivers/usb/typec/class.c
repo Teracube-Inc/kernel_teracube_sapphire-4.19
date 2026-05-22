@@ -297,7 +297,7 @@ void typec_altmode_update_active(struct typec_altmode *adev, bool active)
 	if (adev->active == active)
 		return;
 
-	if (!is_typec_port(adev->dev.parent)) {
+	if (!is_typec_port(adev->dev.parent) && adev->dev.driver) {
 		if (!active)
 			module_put(adev->dev.driver->owner);
 		else
@@ -1523,11 +1523,8 @@ typec_port_register_altmode(struct typec_port *port,
 {
 	struct typec_altmode *adev;
 	struct typec_mux *mux;
-	char id[10];
 
-	sprintf(id, "id%04xm%02x", desc->svid, desc->mode);
-
-	mux = typec_mux_get(&port->dev, id);
+	mux = typec_mux_get(&port->dev, desc);
 	if (IS_ERR(mux))
 		return ERR_CAST(mux);
 
@@ -1621,7 +1618,7 @@ struct typec_port *typec_register_port(struct device *parent,
 		return ERR_PTR(ret);
 	}
 
-	port->mux = typec_mux_get(&port->dev, "typec-mux");
+	port->mux = typec_mux_get(&port->dev, NULL);
 	if (IS_ERR(port->mux)) {
 		ret = PTR_ERR(port->mux);
 		put_device(&port->dev);
@@ -1660,13 +1657,25 @@ static int __init typec_init(void)
 	if (ret)
 		return ret;
 
+	ret = class_register(&typec_mux_class);
+	if (ret)
+		goto err_unregister_bus;
+
 	typec_class = class_create(THIS_MODULE, "typec");
 	if (IS_ERR(typec_class)) {
-		bus_unregister(&typec_bus);
-		return PTR_ERR(typec_class);
+		ret = PTR_ERR(typec_class);
+		goto err_unregister_mux_class;
 	}
 
 	return 0;
+
+err_unregister_mux_class:
+	class_unregister(&typec_mux_class);
+
+err_unregister_bus:
+	bus_unregister(&typec_bus);
+
+	return ret;
 }
 subsys_initcall(typec_init);
 
@@ -1675,6 +1684,7 @@ static void __exit typec_exit(void)
 	class_destroy(typec_class);
 	ida_destroy(&typec_index_ida);
 	bus_unregister(&typec_bus);
+	class_unregister(&typec_mux_class);
 }
 module_exit(typec_exit);
 

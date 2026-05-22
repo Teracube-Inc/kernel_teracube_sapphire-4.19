@@ -26,6 +26,7 @@
 #include <linux/clk/clk-conf.h>
 #include <linux/limits.h>
 #include <linux/property.h>
+#include <linux/bootprof.h>
 #include <linux/kmemleak.h>
 #include <linux/types.h>
 
@@ -494,9 +495,17 @@ EXPORT_SYMBOL_GPL(platform_device_del);
  */
 int platform_device_register(struct platform_device *pdev)
 {
+	int ret;
+#ifdef CONFIG_MTPROF
+	unsigned long long ts;
+#endif
+	BOOTPROF_TIME_LOG_START(ts);
 	device_initialize(&pdev->dev);
 	arch_setup_pdev_archdata(pdev);
-	return platform_device_add(pdev);
+	ret = platform_device_add(pdev);
+	BOOTPROF_TIME_LOG_END(ts);
+	bootprof_pdev_register(ts, pdev);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(platform_device_register);
 
@@ -893,7 +902,7 @@ static ssize_t driver_override_store(struct device *dev,
 	struct platform_device *pdev = to_platform_device(dev);
 	int ret;
 
-	ret = driver_set_override(dev, &pdev->driver_override, buf, count);
+	ret = driver_set_override(dev, (const char **)&pdev->driver_override, buf, count);
 	if (ret)
 		return ret;
 

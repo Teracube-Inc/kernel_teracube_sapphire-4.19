@@ -19,6 +19,7 @@ struct Qdisc_ops;
 struct qdisc_walker;
 struct tcf_walker;
 struct module;
+struct bpf_flow_keys;
 
 typedef int tc_setup_cb_t(enum tc_setup_type type,
 			  void *type_data, void *cb_priv);
@@ -108,7 +109,9 @@ struct Qdisc {
 
 	spinlock_t		busylock ____cacheline_aligned_in_smp;
 	spinlock_t		seqlock;
+#ifndef __GENKSYMS__
 	struct rcu_head		rcu;
+#endif
 };
 
 static inline void qdisc_refcount_inc(struct Qdisc *qdisc)
@@ -230,8 +233,6 @@ struct Qdisc_ops {
 					  struct netlink_ext_ack *extack);
 	void			(*attach)(struct Qdisc *sch);
 	int			(*change_tx_queue_len)(struct Qdisc *, unsigned int);
-	void			(*change_real_num_tx)(struct Qdisc *sch,
-						      unsigned int new_real_tx);
 
 	int			(*dump)(struct Qdisc *, struct sk_buff *);
 	int			(*dump_stats)(struct Qdisc *, struct gnet_dump *);
@@ -327,9 +328,11 @@ struct tcf_proto {
 };
 
 struct qdisc_skb_cb {
-	unsigned int		pkt_len;
-	u16			slave_dev_queue_mapping;
-	u16			tc_classid;
+	struct {
+		unsigned int		pkt_len;
+		u16			slave_dev_queue_mapping;
+		u16			tc_classid;
+	};
 #define QDISC_CB_PRIV_LEN 20
 	unsigned char		data[QDISC_CB_PRIV_LEN];
 };
@@ -563,8 +566,6 @@ void qdisc_class_hash_grow(struct Qdisc *, struct Qdisc_class_hash *);
 void qdisc_class_hash_destroy(struct Qdisc_class_hash *);
 
 int dev_qdisc_change_tx_queue_len(struct net_device *dev);
-void dev_qdisc_change_real_num_tx(struct net_device *dev,
-				  unsigned int new_real_tx);
 void dev_init_scheduler(struct net_device *dev);
 void dev_shutdown(struct net_device *dev);
 void dev_activate(struct net_device *dev);

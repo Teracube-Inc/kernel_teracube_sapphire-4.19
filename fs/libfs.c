@@ -16,6 +16,10 @@
 #include <linux/exportfs.h>
 #include <linux/writeback.h>
 #include <linux/buffer_head.h> /* sync_mapping_buffers */
+#include <linux/unicode.h>
+#include <linux/fscrypt.h>
+#include <linux/fs_context.h>
+#include <linux/pseudo_fs.h>
 
 #include <linux/uaccess.h>
 
@@ -237,34 +241,22 @@ static const struct super_operations simple_super_operations = {
 	.statfs		= simple_statfs,
 };
 
-/*
- * Common helper for pseudo-filesystems (sockfs, pipefs, bdev - stuff that
- * will never be mountable)
- */
-struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
-	const struct super_operations *ops, const struct xattr_handler **xattr,
-	const struct dentry_operations *dops, unsigned long magic)
+static int pseudo_fs_fill_super(struct super_block *s, struct fs_context *fc)
 {
-	struct super_block *s;
-	struct dentry *dentry;
+	struct pseudo_fs_context *ctx = fc->fs_private;
 	struct inode *root;
-	struct qstr d_name = QSTR_INIT(name, strlen(name));
-
-	s = sget_userns(fs_type, NULL, set_anon_super, SB_KERNMOUNT|SB_NOUSER,
-			&init_user_ns, NULL);
-	if (IS_ERR(s))
-		return ERR_CAST(s);
 
 	s->s_maxbytes = MAX_LFS_FILESIZE;
 	s->s_blocksize = PAGE_SIZE;
 	s->s_blocksize_bits = PAGE_SHIFT;
-	s->s_magic = magic;
-	s->s_op = ops ? ops : &simple_super_operations;
-	s->s_xattr = xattr;
+	s->s_magic = ctx->magic;
+	s->s_op = ctx->ops ?: &simple_super_operations;
+	s->s_xattr = ctx->xattr;
 	s->s_time_gran = 1;
 	root = new_inode(s);
 	if (!root)
-		goto Enomem;
+		return -ENOMEM;
+
 	/*
 	 * since this is the first inode, make it number 1. New inodes created
 	 * after this must take care not to collide with it (by passing
@@ -273,22 +265,48 @@ struct dentry *mount_pseudo_xattr(struct file_system_type *fs_type, char *name,
 	root->i_ino = 1;
 	root->i_mode = S_IFDIR | S_IRUSR | S_IWUSR;
 	root->i_atime = root->i_mtime = root->i_ctime = current_time(root);
-	dentry = __d_alloc(s, &d_name);
-	if (!dentry) {
-		iput(root);
-		goto Enomem;
-	}
-	d_instantiate(dentry, root);
-	s->s_root = dentry;
-	s->s_d_op = dops;
-	s->s_flags |= SB_ACTIVE;
-	return dget(s->s_root);
-
-Enomem:
-	deactivate_locked_super(s);
-	return ERR_PTR(-ENOMEM);
+	s->s_root = d_make_root(root);
+	if (!s->s_root)
+		return -ENOMEM;
+	s->s_d_op = ctx->dops;
+	return 0;
 }
-EXPORT_SYMBOL(mount_pseudo_xattr);
+
+static int pseudo_fs_get_tree(struct fs_context *fc)
+{
+	return get_tree_nodev(fc, pseudo_fs_fill_super);
+}
+
+static void pseudo_fs_free(struct fs_context *fc)
+{
+	kfree(fc->fs_private);
+}
+
+static const struct fs_context_operations pseudo_fs_context_ops = {
+	.free		= pseudo_fs_free,
+	.get_tree	= pseudo_fs_get_tree,
+};
+
+/*
+ * Common helper for pseudo-filesystems (sockfs, pipefs, bdev - stuff that
+ * will never be mountable)
+ */
+struct pseudo_fs_context *init_pseudo(struct fs_context *fc,
+					unsigned long magic)
+{
+	struct pseudo_fs_context *ctx;
+
+	ctx = kzalloc(sizeof(struct pseudo_fs_context), GFP_KERNEL);
+	if (likely(ctx)) {
+		ctx->magic = magic;
+		fc->fs_private = ctx;
+		fc->ops = &pseudo_fs_context_ops;
+		fc->sb_flags |= SB_NOUSER;
+		fc->global = true;
+	}
+	return ctx;
+}
+EXPORT_SYMBOL(init_pseudo);
 
 int simple_open(struct inode *inode, struct file *file)
 {
@@ -1139,11 +1157,6 @@ static int anon_set_page_dirty(struct page *page)
 	return 0;
 };
 
-/*
- * A single inode exists for all anon_inode files. Contrary to pipes,
- * anon_inode inodes have no associated per-instance data, so we need
- * only allocate one of them.
- */
 struct inode *alloc_anon_inode(struct super_block *s)
 {
 	static const struct address_space_operations anon_aops = {
@@ -1278,3 +1291,128 @@ bool is_empty_dir_inode(struct inode *inode)
 	return (inode->i_fop == &empty_dir_operations) &&
 		(inode->i_op == &empty_dir_inode_operations);
 }
+
+#ifdef CONFIG_UNICODE
+bool needs_casefold(const struct inode *dir)
+{
+	return IS_CASEFOLDED(dir) && dir->i_sb->s_encoding &&
+			(!IS_ENCRYPTED(dir) || fscrypt_has_encryption_key(dir));
+}
+EXPORT_SYMBOL(needs_casefold);
+
+int generic_ci_d_compare(const struct dentry *dentry, unsigned int len,
+			  const char *str, const struct qstr *name)
+{
+	const struct dentry *parent = READ_ONCE(dentry->d_parent);
+	const struct inode *inode = READ_ONCE(parent->d_inode);
+	const struct super_block *sb = dentry->d_sb;
+	const struct unicode_map *um = sb->s_encoding;
+	struct qstr entry = QSTR_INIT(str, len);
+	char strbuf[DNAME_INLINE_LEN];
+	int ret;
+
+	if (!inode || !needs_casefold(inode))
+		goto fallback;
+
+	/*
+	 * If the dentry name is stored in-line, then it may be concurrently
+	 * modified by a rename.  If this happens, the VFS will eventually retry
+	 * the lookup, so it doesn't matter what ->d_compare() returns.
+	 * However, it's unsafe to call utf8_strncasecmp() with an unstable
+	 * string.  Therefore, we have to copy the name into a temporary buffer.
+	 */
+	if (len <= DNAME_INLINE_LEN - 1) {
+		memcpy(strbuf, str, len);
+		strbuf[len] = 0;
+		entry.name = strbuf;
+		/* prevent compiler from optimizing out the temporary buffer */
+		barrier();
+	}
+
+	ret = utf8_strncasecmp(um, name, &entry);
+	if (ret >= 0)
+		return ret;
+
+	if (sb_has_enc_strict_mode(sb))
+		return -EINVAL;
+fallback:
+	if (len != name->len)
+		return 1;
+	return !!memcmp(str, name->name, len);
+}
+EXPORT_SYMBOL(generic_ci_d_compare);
+
+int generic_ci_d_hash(const struct dentry *dentry, struct qstr *str)
+{
+	const struct inode *inode = READ_ONCE(dentry->d_inode);
+	struct super_block *sb = dentry->d_sb;
+	const struct unicode_map *um = sb->s_encoding;
+	int ret = 0;
+
+	if (!inode || !needs_casefold(inode))
+		return 0;
+
+	ret = utf8_casefold_hash(um, dentry, str);
+	if (ret < 0)
+		goto err;
+
+	return 0;
+err:
+	if (sb_has_enc_strict_mode(sb))
+		ret = -EINVAL;
+	else
+		ret = 0;
+	return ret;
+}
+EXPORT_SYMBOL(generic_ci_d_hash);
+
+static const struct dentry_operations generic_ci_dentry_ops = {
+	.d_hash = generic_ci_d_hash,
+	.d_compare = generic_ci_d_compare,
+};
+#endif
+
+#ifdef CONFIG_FS_ENCRYPTION
+static const struct dentry_operations generic_encrypted_dentry_ops = {
+	.d_revalidate = fscrypt_d_revalidate,
+};
+#endif
+
+#if IS_ENABLED(CONFIG_UNICODE) && IS_ENABLED(CONFIG_FS_ENCRYPTION)
+static const struct dentry_operations generic_encrypted_ci_dentry_ops = {
+	.d_hash = generic_ci_d_hash,
+	.d_compare = generic_ci_d_compare,
+	.d_revalidate = fscrypt_d_revalidate,
+};
+#endif
+
+/**
+ * generic_set_encrypted_ci_d_ops - helper for setting d_ops for given dentry
+ * @dir:	parent of dentry whose ops to set
+ * @dentry:	detnry to set ops on
+ *
+ * This function sets the dentry ops for the given dentry to handle both
+ * casefolding and encryption of the dentry name.
+ */
+void generic_set_encrypted_ci_d_ops(struct inode *dir, struct dentry *dentry)
+{
+#ifdef CONFIG_FS_ENCRYPTION
+	if (dentry->d_flags & DCACHE_ENCRYPTED_NAME) {
+#ifdef CONFIG_UNICODE
+		if (dir->i_sb->s_encoding) {
+			d_set_d_op(dentry, &generic_encrypted_ci_dentry_ops);
+			return;
+		}
+#endif
+		d_set_d_op(dentry, &generic_encrypted_dentry_ops);
+		return;
+	}
+#endif
+#ifdef CONFIG_UNICODE
+	if (dir->i_sb->s_encoding) {
+		d_set_d_op(dentry, &generic_ci_dentry_ops);
+		return;
+	}
+#endif
+}
+EXPORT_SYMBOL(generic_set_encrypted_ci_d_ops);

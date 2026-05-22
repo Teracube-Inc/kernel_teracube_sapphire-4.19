@@ -62,6 +62,84 @@
 #define RTNL_MAX_TYPE		48
 #define RTNL_SLAVE_MAX_TYPE	36
 
+#include <linux/stacktrace.h>
+#define RTNL_DEBUG_ADDRS_COUNT 10
+#define RTNL_LOCK_MAX_HOLD_TIME 3
+
+struct rtnl_debug_btrace_t {
+	struct task_struct *task;
+	int   pid;
+	unsigned long long start;
+	unsigned long long end;
+	unsigned long addrs[RTNL_DEBUG_ADDRS_COUNT];
+	unsigned int entry_nr;
+	char flag;/*1 get rtnl_lock,0 : relase rtnl_lock*/
+	struct task_struct *rtnl_lock_owner;
+	struct timer_list   timer;
+};
+
+static struct rtnl_debug_btrace_t rtnl_instance = {
+	.task = NULL,
+	.pid = 0,
+	.start = 0,
+	.end = 0,
+	.entry_nr = 0,
+	.flag = 0,
+	.rtnl_lock_owner = NULL,
+};
+
+static void rtnl_print_btrace(struct timer_list *);
+static DEFINE_TIMER(rtnl_chk_timer, rtnl_print_btrace);
+
+void rtnl_get_btrace(struct task_struct *who)
+{
+	struct stack_trace debug_trace;
+
+	debug_trace.max_entries = RTNL_DEBUG_ADDRS_COUNT;
+	debug_trace.nr_entries = 0;
+	debug_trace.entries = rtnl_instance.addrs;
+	debug_trace.skip = 0;
+	save_stack_trace(&debug_trace);
+	rtnl_instance.task = who;
+	rtnl_instance.start = sched_clock();
+	rtnl_instance.end = 0;
+	rtnl_instance.flag = 1;
+	rtnl_instance.pid = current->pid;
+	rtnl_instance.rtnl_lock_owner  = current;
+	rtnl_instance.entry_nr = debug_trace.nr_entries;
+	rtnl_instance.flag = 1;
+	mod_timer(&rtnl_chk_timer, jiffies + RTNL_LOCK_MAX_HOLD_TIME * HZ);
+}
+
+#include <linux/sched/debug.h>
+static void rtnl_print_btrace(struct timer_list *unused)
+{
+	if (rtnl_instance.flag) {
+		struct stack_trace show_trace;
+
+		show_trace.nr_entries = rtnl_instance.entry_nr;
+		show_trace.entries = rtnl_instance.addrs;
+		show_trace.max_entries = RTNL_DEBUG_ADDRS_COUNT;
+		pr_info("-----------%s start-----------\n", __func__);
+		pr_info("[mtk_net][rtnl_lock] %s[%d][%c] hold lock more than 2 sec,start time: %lld\n",
+			rtnl_instance.task->comm,
+			rtnl_instance.pid,
+			task_state_to_char(rtnl_instance.task),
+			rtnl_instance.start);
+
+		print_stack_trace(&show_trace, 0);
+		show_stack(rtnl_instance.task, NULL);
+		pr_info("------------%s end-----------\n", __func__);
+	} else {
+		pr_info("[mtk_net][rtnl_lock]There is no process hold rtnl lock\n");
+	}
+}
+
+void rtnl_relase_btrace(void)
+{
+	rtnl_instance.flag = 0;
+}
+
 struct rtnl_link {
 	rtnl_doit_func		doit;
 	rtnl_dumpit_func	dumpit;
@@ -75,6 +153,7 @@ static DEFINE_MUTEX(rtnl_mutex);
 void rtnl_lock(void)
 {
 	mutex_lock(&rtnl_mutex);
+	rtnl_get_btrace(current);
 }
 EXPORT_SYMBOL(rtnl_lock);
 
@@ -100,6 +179,12 @@ void __rtnl_unlock(void)
 
 	defer_kfree_skb_list = NULL;
 
+	rtnl_instance.end = sched_clock();
+	if (rtnl_instance.end - rtnl_instance.start > 4000000000ULL)//4 second
+		pr_info("[mtk_net][rtnl_unlock] rtnl_lock is held by [%d] from [%llu] to [%llu]\n",
+			rtnl_instance.pid,
+			rtnl_instance.start, rtnl_instance.end);
+
 	mutex_unlock(&rtnl_mutex);
 
 	while (head) {
@@ -109,6 +194,8 @@ void __rtnl_unlock(void)
 		cond_resched();
 		head = next;
 	}
+
+	rtnl_relase_btrace();
 }
 
 void rtnl_unlock(void)
@@ -1383,13 +1470,12 @@ static u32 rtnl_xdp_prog_skb(struct net_device *dev)
 
 static u32 rtnl_xdp_prog_drv(struct net_device *dev)
 {
-	return __dev_xdp_query(dev, dev->netdev_ops->ndo_bpf, XDP_QUERY_PROG);
+	return dev_xdp_prog_id(dev, XDP_MODE_DRV);
 }
 
 static u32 rtnl_xdp_prog_hw(struct net_device *dev)
 {
-	return __dev_xdp_query(dev, dev->netdev_ops->ndo_bpf,
-			       XDP_QUERY_PROG_HW);
+	return dev_xdp_prog_id(dev, XDP_MODE_HW);
 }
 
 static int rtnl_xdp_report_one(struct sk_buff *skb, struct net_device *dev,
@@ -1799,7 +1885,9 @@ static const struct nla_policy ifla_port_policy[IFLA_PORT_MAX+1] = {
 };
 
 static const struct nla_policy ifla_xdp_policy[IFLA_XDP_MAX + 1] = {
+	[IFLA_XDP_UNSPEC]	= { .strict_start_type = IFLA_XDP_EXPECTED_FD },
 	[IFLA_XDP_FD]		= { .type = NLA_S32 },
+	[IFLA_XDP_EXPECTED_FD]	= { .type = NLA_S32 },
 	[IFLA_XDP_ATTACHED]	= { .type = NLA_U8 },
 	[IFLA_XDP_FLAGS]	= { .type = NLA_U32 },
 	[IFLA_XDP_PROG_ID]	= { .type = NLA_U32 },
@@ -2655,8 +2743,20 @@ static int do_setlink(const struct sk_buff *skb,
 		}
 
 		if (xdp[IFLA_XDP_FD]) {
+			int expected_fd = -1;
+
+			if (xdp_flags & XDP_FLAGS_REPLACE) {
+				if (!xdp[IFLA_XDP_EXPECTED_FD]) {
+					err = -EINVAL;
+					goto errout;
+				}
+				expected_fd =
+					nla_get_s32(xdp[IFLA_XDP_EXPECTED_FD]);
+			}
+
 			err = dev_change_xdp_fd(dev, extack,
 						nla_get_s32(xdp[IFLA_XDP_FD]),
+						expected_fd,
 						xdp_flags);
 			if (err)
 				goto errout;
@@ -2851,9 +2951,11 @@ int rtnl_configure_link(struct net_device *dev, const struct ifinfomsg *ifm)
 }
 EXPORT_SYMBOL(rtnl_configure_link);
 
-struct net_device *rtnl_create_link(struct net *net,
-	const char *ifname, unsigned char name_assign_type,
-	const struct rtnl_link_ops *ops, struct nlattr *tb[])
+struct net_device *rtnl_create_link(struct net *net, const char *ifname,
+				    unsigned char name_assign_type,
+				    const struct rtnl_link_ops *ops,
+				    struct nlattr *tb[],
+				    struct netlink_ext_ack *extack)
 {
 	struct net_device *dev;
 	unsigned int num_tx_queues = 1;
@@ -2869,11 +2971,15 @@ struct net_device *rtnl_create_link(struct net *net,
 	else if (ops->get_num_rx_queues)
 		num_rx_queues = ops->get_num_rx_queues();
 
-	if (num_tx_queues < 1 || num_tx_queues > 4096)
+	if (num_tx_queues < 1 || num_tx_queues > 4096) {
+		NL_SET_ERR_MSG(extack, "Invalid number of transmit queues");
 		return ERR_PTR(-EINVAL);
+	}
 
-	if (num_rx_queues < 1 || num_rx_queues > 4096)
+	if (num_rx_queues < 1 || num_rx_queues > 4096) {
+		NL_SET_ERR_MSG(extack, "Invalid number of receive queues");
 		return ERR_PTR(-EINVAL);
+	}
 
 	dev = alloc_netdev_mqs(ops->priv_size, ifname, name_assign_type,
 			       ops->setup, num_tx_queues, num_rx_queues);
@@ -3143,7 +3249,7 @@ replay:
 		}
 
 		dev = rtnl_create_link(link_net ? : dest_net, ifname,
-				       name_assign_type, ops, tb);
+				       name_assign_type, ops, tb, extack);
 		if (IS_ERR(dev)) {
 			err = PTR_ERR(dev);
 			goto out;

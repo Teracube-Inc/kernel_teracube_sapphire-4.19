@@ -95,7 +95,7 @@ static int module_trace_bprintk_format_notify(struct notifier_block *self,
 		if (val == MODULE_STATE_COMING)
 			hold_module_trace_bprintk_format(start, end);
 	}
-	return 0;
+	return NOTIFY_OK;
 }
 
 /*
@@ -173,7 +173,7 @@ __init static int
 module_trace_bprintk_format_notify(struct notifier_block *self,
 		unsigned long val, void *data)
 {
-	return 0;
+	return NOTIFY_OK;
 }
 static inline const char **
 find_next_mod_format(int start_index, void *v, const char **fmt, loff_t *pos)
@@ -190,6 +190,11 @@ void trace_printk_control(bool enabled)
 {
 	trace_printk_enabled = enabled;
 }
+
+#if defined(CONFIG_DISABLE_TRACE_PRINTK)
+void trace_printk(const char *fmt, ...) { }
+EXPORT_SYMBOL_GPL(trace_printk);
+#endif
 
 __initdata_or_module static
 struct notifier_block module_trace_bprintk_format_nb = {
@@ -305,7 +310,7 @@ static int t_show(struct seq_file *m, void *v)
 	if (!*fmt)
 		return 0;
 
-	seq_printf(m, "0x%lx : \"", *(unsigned long *)fmt);
+	seq_printf(m, "0x%pK : \"", *(void **)fmt);
 
 	/*
 	 * Tabs and new lines need to be converted.

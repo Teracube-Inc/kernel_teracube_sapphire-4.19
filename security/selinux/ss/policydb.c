@@ -914,13 +914,26 @@ int policydb_load_isids(struct policydb *p, struct sidtab *s)
 		if (!c->context[0].user) {
 			pr_err("SELinux:  SID %s was never defined.\n",
 				c->u.name);
+			sidtab_destroy(s);
+			goto out;
+		}
+		if (c->sid[0] == SECSID_NULL || c->sid[0] > SECINITSID_NUM) {
+			pr_err("SELinux:  Initial SID %s out of range.\n",
+				c->u.name);
+			sidtab_destroy(s);
+			goto out;
+		}
+		rc = context_add_hash(p, &c->context[0]);
+		if (rc) {
+			sidtab_destroy(s);
 			goto out;
 		}
 
-		rc = sidtab_insert(s, c->sid[0], &c->context[0]);
+		rc = sidtab_set_initial(s, c->sid[0], &c->context[0]);
 		if (rc) {
 			pr_err("SELinux:  unable to load initial SID %s.\n",
 				c->u.name);
+			sidtab_destroy(s);
 			goto out;
 		}
 	}
@@ -2387,6 +2400,14 @@ int policydb_read(struct policydb *p, void *fp)
 	p->reject_unknown = !!(le32_to_cpu(buf[1]) & REJECT_UNKNOWN);
 	p->allow_unknown = !!(le32_to_cpu(buf[1]) & ALLOW_UNKNOWN);
 
+	if ((le32_to_cpu(buf[1]) & POLICYDB_CONFIG_ANDROID_NETLINK_ROUTE)) {
+		p->android_netlink_route = 1;
+	}
+
+	if ((le32_to_cpu(buf[1]) & POLICYDB_CONFIG_ANDROID_NETLINK_GETNEIGH)) {
+		p->android_netlink_getneigh = 1;
+	}
+
 	if (p->policyvers >= POLICYDB_VERSION_POLCAP) {
 		rc = ebitmap_read(&p->policycaps, fp);
 		if (rc)
@@ -2697,7 +2718,7 @@ static int role_trans_write(struct policydb *p, void *fp)
 {
 	struct role_trans *r = p->role_tr;
 	struct role_trans *tr;
-	u32 buf[3];
+	__le32 buf[3];
 	size_t nel;
 	int rc;
 
@@ -2729,7 +2750,7 @@ static int role_trans_write(struct policydb *p, void *fp)
 static int role_allow_write(struct role_allow *r, void *fp)
 {
 	struct role_allow *ra;
-	u32 buf[2];
+	__le32 buf[2];
 	size_t nel;
 	int rc;
 

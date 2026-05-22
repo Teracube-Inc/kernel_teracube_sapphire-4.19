@@ -134,6 +134,7 @@ SECTIONS
 			IDMAP_TEXT
 			HIBERNATE_TEXT
 			TRAMP_TEXT
+			*(.text..L.cfi.jumptable .text..L.cfi.jumptable.*)
 			*(.fixup)
 			*(.gnu.warning)
 		. = ALIGN(16);
@@ -162,6 +163,9 @@ SECTIONS
 		*(.altinstructions)
 		__alt_instructions_end = .;
 	}
+	.altinstr_replacement : {
+		*(.altinstr_replacement)
+	}
 
 	. = ALIGN(PAGE_SIZE);
 	__inittext_end = .;
@@ -172,7 +176,6 @@ SECTIONS
 		INIT_SETUP(16)
 		INIT_CALLS
 		CON_INITCALL
-		SECURITY_INITCALL
 		INIT_RAM_FS
 		*(.init.rodata.* .init.bss)	/* from the EFI stub */
 	}
@@ -188,6 +191,15 @@ SECTIONS
 
 	__rela_offset	= ABSOLUTE(ADDR(.rela.dyn) - KIMAGE_VADDR);
 	__rela_size	= SIZEOF(.rela.dyn);
+
+#ifdef CONFIG_RELR
+	.relr.dyn : ALIGN(8) {
+		*(.relr.dyn)
+	}
+
+	__relr_offset	= ABSOLUTE(ADDR(.relr.dyn) - KIMAGE_VADDR);
+	__relr_size	= SIZEOF(.relr.dyn);
+#endif
 
 	. = ALIGN(SEGMENT_ALIGN);
 	__initdata_end = .;

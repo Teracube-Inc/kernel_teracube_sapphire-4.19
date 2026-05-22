@@ -130,7 +130,7 @@ xattr_permission(struct inode *inode, const char *name, int mask)
 			return -EPERM;
 	}
 
-	return inode_permission(inode, mask);
+	return inode_permission2(ERR_PTR(-EOPNOTSUPP), inode, mask);
 }
 
 int
@@ -342,6 +342,9 @@ __vfs_getxattr(struct dentry *dentry, struct inode *inode, const char *name,
 	handler = xattr_resolve_name(inode, &name);
 	if (IS_ERR(handler))
 		return PTR_ERR(handler);
+	if (unlikely(handler->__get))
+		return handler->__get(handler, dentry, inode, name, value,
+				      size);
 	if (!handler->get)
 		return -EOPNOTSUPP;
 	return handler->get(handler, dentry, inode, name, value, size);
@@ -353,6 +356,7 @@ vfs_getxattr(struct dentry *dentry, const char *name, void *value, size_t size)
 {
 	struct inode *inode = dentry->d_inode;
 	int error;
+	const struct xattr_handler *handler;
 
 	error = xattr_permission(inode, name, MAY_READ);
 	if (error)
@@ -375,7 +379,12 @@ vfs_getxattr(struct dentry *dentry, const char *name, void *value, size_t size)
 		return ret;
 	}
 nolsm:
-	return __vfs_getxattr(dentry, inode, name, value, size);
+	handler = xattr_resolve_name(inode, &name);
+	if (IS_ERR(handler))
+		return PTR_ERR(handler);
+	if (!handler->get)
+		return -EOPNOTSUPP;
+	return handler->get(handler, dentry, inode, name, value, size);
 }
 EXPORT_SYMBOL_GPL(vfs_getxattr);
 
@@ -929,6 +938,7 @@ int simple_xattr_get(struct simple_xattrs *xattrs, const char *name,
  * @value: value of the xattr. If %NULL, will remove the attribute.
  * @size: size of the new xattr
  * @flags: %XATTR_{CREATE|REPLACE}
+ * @removed_size: returns size of the removed xattr, -1 if none removed
  *
  * %XATTR_CREATE is set, the xattr shouldn't exist already; otherwise fails
  * with -EEXIST.  If %XATTR_REPLACE is set, the xattr should exist;
@@ -937,7 +947,8 @@ int simple_xattr_get(struct simple_xattrs *xattrs, const char *name,
  * Returns 0 on success, -errno on failure.
  */
 int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
-		     const void *value, size_t size, int flags)
+		     const void *value, size_t size, int flags,
+		     ssize_t *removed_size)
 {
 	struct simple_xattr *xattr;
 	struct simple_xattr *new_xattr = NULL;
@@ -964,8 +975,12 @@ int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
 				err = -EEXIST;
 			} else if (new_xattr) {
 				list_replace(&xattr->list, &new_xattr->list);
+				if (removed_size)
+					*removed_size = xattr->size;
 			} else {
 				list_del(&xattr->list);
+				if (removed_size)
+					*removed_size = xattr->size;
 			}
 			goto out;
 		}
@@ -977,6 +992,9 @@ int simple_xattr_set(struct simple_xattrs *xattrs, const char *name,
 		list_add(&new_xattr->list, &xattrs->head);
 		xattr = NULL;
 	}
+
+	if (removed_size)
+		*removed_size = -1;
 out:
 	spin_unlock(&xattrs->lock);
 	if (xattr) {

@@ -1805,6 +1805,7 @@ static void usb_giveback_urb_bh(unsigned long param)
 
 	spin_lock_irq(&bh->lock);
 	bh->running = true;
+ restart:
 	list_replace_init(&bh->head, &local_list);
 	spin_unlock_irq(&bh->lock);
 
@@ -1818,17 +1819,10 @@ static void usb_giveback_urb_bh(unsigned long param)
 		bh->completing_ep = NULL;
 	}
 
-	/*
-	 * giveback new URBs next time to prevent this function
-	 * from not exiting for a long time.
-	 */
+	/* check if there are new URBs to giveback */
 	spin_lock_irq(&bh->lock);
-	if (!list_empty(&bh->head)) {
-		if (bh->high_prio)
-			tasklet_hi_schedule(&bh->bh);
-		else
-			tasklet_schedule(&bh->bh);
-	}
+	if (!list_empty(&bh->head))
+		goto restart;
 	bh->running = false;
 	spin_unlock_irq(&bh->lock);
 }
@@ -1853,7 +1847,7 @@ static void usb_giveback_urb_bh(unsigned long param)
 void usb_hcd_giveback_urb(struct usb_hcd *hcd, struct urb *urb, int status)
 {
 	struct giveback_urb_bh *bh;
-	bool running;
+	bool running, high_prio_bh;
 
 	/* pass status to tasklet via unlinked */
 	if (likely(!urb->unlinked))
@@ -1864,10 +1858,13 @@ void usb_hcd_giveback_urb(struct usb_hcd *hcd, struct urb *urb, int status)
 		return;
 	}
 
-	if (usb_pipeisoc(urb->pipe) || usb_pipeint(urb->pipe))
+	if (usb_pipeisoc(urb->pipe) || usb_pipeint(urb->pipe)) {
 		bh = &hcd->high_prio_bh;
-	else
+		high_prio_bh = true;
+	} else {
 		bh = &hcd->low_prio_bh;
+		high_prio_bh = false;
+	}
 
 	spin_lock(&bh->lock);
 	list_add_tail(&urb->urb_list, &bh->head);
@@ -1876,7 +1873,7 @@ void usb_hcd_giveback_urb(struct usb_hcd *hcd, struct urb *urb, int status)
 
 	if (running)
 		;
-	else if (bh->high_prio)
+	else if (high_prio_bh)
 		tasklet_hi_schedule(&bh->bh);
 	else
 		tasklet_schedule(&bh->bh);
@@ -2257,7 +2254,71 @@ int usb_hcd_get_frame_number (struct usb_device *udev)
 	return hcd->driver->get_frame_number (hcd);
 }
 
+int usb_hcd_sec_event_ring_setup(struct usb_device *udev,
+	unsigned int intr_num)
+{
+	struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
+
+	if (!HCD_RH_RUNNING(hcd))
+		return 0;
+
+	return hcd->driver->sec_event_ring_setup(hcd, intr_num);
+}
+
+int usb_hcd_sec_event_ring_cleanup(struct usb_device *udev,
+	unsigned int intr_num)
+{
+	struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
+
+	if (!HCD_RH_RUNNING(hcd))
+		return 0;
+
+	return hcd->driver->sec_event_ring_cleanup(hcd, intr_num);
+}
+
 /*-------------------------------------------------------------------------*/
+
+phys_addr_t
+usb_hcd_get_sec_event_ring_phys_addr(struct usb_device *udev,
+	unsigned int intr_num, dma_addr_t *dma)
+{
+	struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
+
+	if (!HCD_RH_RUNNING(hcd))
+		return 0;
+
+	return hcd->driver->get_sec_event_ring_phys_addr(hcd, intr_num, dma);
+}
+
+phys_addr_t
+usb_hcd_get_xfer_ring_phys_addr(struct usb_device *udev,
+		struct usb_host_endpoint *ep, dma_addr_t *dma)
+{
+	struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
+
+	if (!HCD_RH_RUNNING(hcd))
+		return 0;
+
+	return hcd->driver->get_xfer_ring_phys_addr(hcd, udev, ep, dma);
+}
+
+int usb_hcd_get_controller_id(struct usb_device *udev)
+{
+	struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
+
+	if (!HCD_RH_RUNNING(hcd))
+		return -EINVAL;
+
+	return hcd->driver->get_core_id(hcd);
+}
+
+int usb_hcd_stop_endpoint(struct usb_device *udev,
+		struct usb_host_endpoint *ep)
+{
+	struct usb_hcd	*hcd = bus_to_hcd(udev->bus);
+
+	return hcd->driver->stop_endpoint(hcd, udev, ep);
+}
 
 #ifdef	CONFIG_PM
 
@@ -2527,6 +2588,7 @@ void usb_hc_died (struct usb_hcd *hcd)
 	}
 	spin_unlock_irqrestore (&hcd_root_hub_lock, flags);
 	/* Make sure that the other roothub is also deallocated. */
+	usb_atomic_notify_dead_bus(&hcd->self);
 }
 EXPORT_SYMBOL_GPL (usb_hc_died);
 
@@ -2884,7 +2946,6 @@ int usb_add_hcd(struct usb_hcd *hcd,
 
 	/* initialize tasklets */
 	init_giveback_urb_bh(&hcd->high_prio_bh);
-	hcd->high_prio_bh.high_prio = true;
 	init_giveback_urb_bh(&hcd->low_prio_bh);
 
 	/* enable irqs just before we start the controller,

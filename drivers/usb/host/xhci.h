@@ -1730,7 +1730,6 @@ struct xhci_port {
 	int			hcd_portnum;
 	struct xhci_hub		*rhub;
 	struct xhci_port_cap	*port_cap;
-	unsigned int		lpm_incapable:1;
 };
 
 struct xhci_hub {
@@ -1753,6 +1752,10 @@ struct xhci_hcd {
 	struct xhci_doorbell_array __iomem *dba;
 	/* Our HCD's current interrupter register set */
 	struct	xhci_intr_reg __iomem *ir_set;
+	/* secondary interrupter */
+	struct	xhci_intr_reg __iomem **sec_ir_set;
+
+	int		core_id;
 
 	/* Cached register copies of read-only HC data */
 	__u32		hcs_params1;
@@ -1796,6 +1799,11 @@ struct xhci_hcd {
 	struct xhci_command	*current_cmd;
 	struct xhci_ring	*event_ring;
 	struct xhci_erst	erst;
+
+	/* secondary event ring and erst */
+	struct xhci_ring	**sec_event_ring;
+	struct xhci_erst	*sec_erst;
+
 	/* Scratchpad */
 	struct xhci_scratchpad  *scratchpad;
 	/* Store LPM test failed devices' information */
@@ -1819,7 +1827,7 @@ struct xhci_hcd {
 
 	/* Host controller watchdog timer structures */
 	unsigned int		xhc_state;
-	unsigned long		run_graceperiod;
+
 	u32			command;
 	struct s3_save		s3;
 /* Host controller is dying - not responding to commands. "I'm not dead yet!"
@@ -2066,10 +2074,14 @@ struct xhci_container_ctx *xhci_alloc_container_ctx(struct xhci_hcd *xhci,
 		int type, gfp_t flags);
 void xhci_free_container_ctx(struct xhci_hcd *xhci,
 		struct xhci_container_ctx *ctx);
+int xhci_sec_event_ring_setup(struct usb_hcd *hcd, unsigned int intr_num);
+int xhci_sec_event_ring_cleanup(struct usb_hcd *hcd, unsigned int intr_num);
 
 /* xHCI host controller glue */
 typedef void (*xhci_get_quirks_t)(struct device *, struct xhci_hcd *);
 int xhci_handshake(void __iomem *ptr, u32 mask, u32 done, u64 timeout_us);
+int xhci_handshake_check_state(struct xhci_hcd *xhci,
+		void __iomem *ptr, u32 mask, u32 done, u64 timeout_us);
 void xhci_quiesce(struct xhci_hcd *xhci);
 int xhci_halt(struct xhci_hcd *xhci);
 int xhci_start(struct xhci_hcd *xhci);

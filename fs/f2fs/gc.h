@@ -1,12 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * fs/f2fs/gc.h
  *
  * Copyright (c) 2012 Samsung Electronics Co., Ltd.
  *             http://www.samsung.com/
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #define GC_THREAD_MIN_WB_PAGES		1	/*
 						 * a threshold to determine
@@ -24,6 +21,8 @@
 
 /* Search max. number of dirty segments to select a victim segment */
 #define DEF_MAX_VICTIM_SEARCH 4096 /* covers 8GB */
+
+#define NR_GC_CHECKPOINT_SECS (3)	/* data/node/dentry sections */
 
 struct f2fs_gc_kthread {
 	struct task_struct *f2fs_gc_task;

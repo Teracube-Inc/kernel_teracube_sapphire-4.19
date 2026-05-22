@@ -474,7 +474,7 @@ static void *pcpu_mem_zalloc(size_t size, gfp_t gfp)
 	if (size <= PAGE_SIZE)
 		return kzalloc(size, gfp);
 	else
-		return __vmalloc(size, gfp | __GFP_ZERO, PAGE_KERNEL);
+		return __vmalloc(size, gfp | __GFP_ZERO);
 }
 
 /**
@@ -1865,6 +1865,7 @@ phys_addr_t per_cpu_ptr_to_phys(void *addr)
 		return page_to_phys(pcpu_addr_to_page(addr)) +
 		       offset_in_page(addr);
 }
+EXPORT_SYMBOL_GPL(per_cpu_ptr_to_phys);
 
 /**
  * pcpu_alloc_alloc_info - allocate percpu allocation info

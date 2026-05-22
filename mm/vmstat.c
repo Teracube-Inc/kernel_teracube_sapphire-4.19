@@ -75,7 +75,7 @@ static void invalid_numa_statistics(void)
 static DEFINE_MUTEX(vm_numa_stat_lock);
 
 int sysctl_vm_numa_stat_handler(struct ctl_table *table, int write,
-		void __user *buffer, size_t *length, loff_t *ppos)
+		void *buffer, size_t *length, loff_t *ppos)
 {
 	int ret, oldval;
 
@@ -1117,6 +1117,9 @@ const char * const vmstat_text[] = {
 	"nr_mlock",
 	"nr_page_table_pages",
 	"nr_kernel_stack",
+#if IS_ENABLED(CONFIG_SHADOW_CALL_STACK)
+	"nr_shadow_call_stack_bytes",
+#endif
 	"nr_bounce",
 #if IS_ENABLED(CONFIG_ZSMALLOC)
 	"nr_zspages",
@@ -1145,6 +1148,7 @@ const char * const vmstat_text[] = {
 	"nr_isolated_file",
 	"workingset_refault",
 	"workingset_activate",
+	"workingset_restore",
 	"workingset_nodereclaim",
 	"nr_anon_pages",
 	"nr_mapped",
@@ -1161,8 +1165,13 @@ const char * const vmstat_text[] = {
 	"nr_vmscan_immediate_reclaim",
 	"nr_dirtied",
 	"nr_written",
-	"", /* nr_indirectly_reclaimable */
+	"nr_kernel_misc_reclaimable",
+	"nr_unreclaimable_pages",
 
+
+	"nr_ion_heap",
+	"nr_ion_heap_pool",
+	"nr_gpu_heap",
 	/* enum writeback_stat_item counters */
 	"nr_dirty_threshold",
 	"nr_dirty_background_threshold",
@@ -1171,6 +1180,7 @@ const char * const vmstat_text[] = {
 	/* enum vm_event_item counters */
 	"pgpgin",
 	"pgpgout",
+	"pgpgoutclean",
 	"pswpin",
 	"pswpout",
 
@@ -1698,6 +1708,9 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 static void *vmstat_next(struct seq_file *m, void *arg, loff_t *pos)
 {
 	(*pos)++;
+	//nr_gpu_heap is out-of-tree now so we don't want to export it.
+	if (*pos == NR_VM_ZONE_STAT_ITEMS + NR_VM_NUMA_STAT_ITEMS + NR_GPU_HEAP)
+		(*pos)++;
 	if (*pos >= ARRAY_SIZE(vmstat_text))
 		return NULL;
 	return (unsigned long *)m->private + *pos;
@@ -1707,10 +1720,6 @@ static int vmstat_show(struct seq_file *m, void *arg)
 {
 	unsigned long *l = arg;
 	unsigned long off = l - (unsigned long *)m->private;
-
-	/* Skip hidden vmstat items. */
-	if (*vmstat_text[off] == '\0')
-		return 0;
 
 	seq_puts(m, vmstat_text[off]);
 	seq_put_decimal_ull(m, " ", *l);
@@ -1743,7 +1752,7 @@ static void refresh_vm_stats(struct work_struct *work)
 }
 
 int vmstat_refresh(struct ctl_table *table, int write,
-		   void __user *buffer, size_t *lenp, loff_t *ppos)
+		   void *buffer, size_t *lenp, loff_t *ppos)
 {
 	long val;
 	int err;
