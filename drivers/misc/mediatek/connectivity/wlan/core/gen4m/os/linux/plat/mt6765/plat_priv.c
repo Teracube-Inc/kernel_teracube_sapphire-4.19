@@ -18,8 +18,10 @@
 #include <linux/pm_qos.h>
 #include "wmt_exp.h"
 #else
+#ifdef CONFIG_MTK_CPU_CTRL
 #include <cpu_ctrl.h>
 #include <topo_ctrl.h>
+#endif
 #if KERNEL_VERSION(4, 19, 0) <= CFG80211_VERSION_CODE
 #include <linux/soc/mediatek/mtk-pm-qos.h>
 #define pm_qos_add_request(_req, _class, _value) \
@@ -227,12 +229,9 @@ int32_t kalBoostCpu(IN struct ADAPTER *prAdapter,
 	}
 	kalTraceInt(fgRequested == ENUM_CPU_BOOST_STATUS_START, "kalBoostCpu");
 #else
+#ifdef CONFIG_MTK_CPU_CTRL
 	struct ppm_limit_data freq_to_set[MAX_CLUSTER_NUM];
 	int32_t i = 0, i4Freq = -1;
-#ifdef WLAN_FORCE_DDR_OPP
-	static struct pm_qos_request wifi_qos_request;
-	static u_int8_t fgRequested;
-#endif
 	uint32_t u4ClusterNum = topo_ctrl_get_nr_clusters();
 
 	ASSERT(u4ClusterNum <= MAX_CLUSTER_NUM);
@@ -244,8 +243,12 @@ int32_t kalBoostCpu(IN struct ADAPTER *prAdapter,
 	}
 
 	update_userlimit_cpu_freq(CPU_KIR_WIFI, u4ClusterNum, freq_to_set);
+#endif
 
 #ifdef WLAN_FORCE_DDR_OPP
+	static struct pm_qos_request wifi_qos_request;
+	static u_int8_t fgRequested;
+
 	if (u4TarPerfLevel >= u4BoostCpuTh) {
 		if (!fgRequested) {
 			fgRequested = 1;
